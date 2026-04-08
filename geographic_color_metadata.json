@@ -1,0 +1,168 @@
+{
+    "crop_suitability_rating_map[illustrative_diagram]": {
+        "data_type": "crop_suitability_rating_map",
+        "color_to_value": {
+            "27,127,27": ["level_1", 4],
+            "255,0,0": ["level_2", 3],
+            "0,255,255": ["level_3", 2],
+            "0,0,255": ["level_4", 1]
+        }
+    },
+    "farmland_importance_level[illustrative_diagram]": {
+        "data_type": "farmland_importance_level",
+        "color_to_value": {
+            "0,255,0": ["important", 3],
+            "255,0,0": ["secondary", 2],
+            "0,0,255": ["uncomfortable", 1]
+        }
+    },
+    "farmland_productivity_levels[illustrative_diagram]": {
+        "data_type": "farmland_productivity_levels",
+        "color_to_value": {
+            "0,255,0": ["level_1", 10],
+            "0,0,255": ["level_2", 9],
+            "60,34,143": ["level_3", 8],
+            "164,195,123": ["level_4", 7],
+            "0,255,255": ["level_5", 6],
+            "124,176,254": ["level_6", 5],
+            "182,50,43": ["level_7", 4],
+            "60,90,55": ["level_8", 3],
+            "196,59,201": ["level_9", 2],
+            "109,86,94": ["level_10", 1]
+        }
+    },
+    "soil_slope[illustrative_diagram]": {
+        "data_type": "soil_slope",
+        "color_to_value": {
+            "238,214,138": ["<5", 2.5],
+            "250,250,11": ["5-15", 10],
+            "0,255,0": ["15-30", 22.5],
+            "30,222,254": ["30-40", 35],
+            "25,23,184": ["40-55", 47.5],
+            "206,53,189": [">55", 77.5]
+        }
+    },
+    "soil_type_and_formation[illustrative_diagram]": {
+        "data_type": "soil_type_and_formation",
+        "color_to_value": {
+            "29,219,250": ["alluvial_soil", "STF1"],
+            "87,26,209": ["chernozem", "STF2"],
+            "72,106,52": ["colluvial_soil", "STF3"],
+            "198,109,197": ["marine_and_eolian_soil", "STF4"],
+            "242,61,79": ["organic_soil", "STF5"],
+            "233,186,0": ["alluvial-eolian_mixture", "STF6"],
+            "227,222,173": ["eolian_soil", "STF7"],
+            "201,209,78": ["lacustrine_soil", "STF8"],
+            "204,253,71": ["lithosol", "STF9"],
+            "2,252,3": ["cliff_land", "STF10"],
+            "60,201,156": ["lateritic_soil_[depositional]", "STF11"],
+            "24,141,196": ["lateritic_soil_[reticulate_mottling]", "STF12"],
+            "56,58,202": ["lateritic_soil_[iron-manganese_nodules]", "STF13"],
+            "23,48,142": ["lateritic_soil", "STF14"],
+            "179,221,239": ["sand_dune", "STF15"],
+            "126,3,5": ["taiwan_general_clay_soil", "STF16"],
+            "14,90,255": ["lateritic_soil_[iron-manganese_nodules_<_60_cm]", "STF17"],
+            "2,4,242": ["lateritic_soil_[iron-manganese_nodules_>_60_cm]", "STF18"],
+            "238,8,239": ["lowland_humic_gley_soil", "STF19"],
+            "203,0,91": ["yellow_earth", "STF20"]
+        }
+    },
+    "soil_drainage[illustrative_diagram]": {
+        "data_type": "soil_drainage",
+        "color_to_value": {
+            "217,224,246": ["well_drained", 4],
+            "227,208,163": ["imperfectly_drained", 3],
+            "38,203,97": ["poorly_drained", 2],
+            "29,43,191": ["waterlogged", 1]
+        }
+    },
+    "soil_properties[illustrative_diagram]": {
+        "data_type": "soil_properties",
+        "color_to_value": {
+            "181,233,255": ["unclassified_area", "SP1"],
+            "91,252,0": ["brown", "SP2"],
+            "237,229,225": ["dark_colored", "SP3"],
+            "222,142,94": ["dark_gray", "SP4"],
+            "98,140,74": ["light_gray_or_grayish_yellow", "SP5"],
+            "84,4,0": ["marsh_or_high_water_table", "SP6"],
+            "255,75,143": ["pale_gray_co_yellowish_gray_co_grayish_blue", "SP7"],
+            "218,55,42": ["degraded_iron_nodules", "SP8"],
+            "250,188,3": ["degraded_iron-free_nodules", "SP9"],
+            "191,202,41": ["dominantly_red_with_yellowish_brown_mottles", "SP10"],
+            "203,243,124": ["predominantly_yellowish_brown_with_red_or_mixed_pale_yellow_co_yg_co_gbr", "SP11"],
+            "84,180,84": ["iron-manganese_nodules", "SP12"],
+            "0,255,0": ["recent_alluvium", "SP13"],
+            "37,197,93": ["old_alluvium", "SP14"],
+            "5,250,250": ["orange_red", "SP15"],
+            "92,14,245": ["reddish_brown", "SP16"],
+            "29,82,180": ["red", "SP17"],
+            "51,167,234": ["yellowish_red", "SP18"],
+            "24,44,156": ["yellowish_brown_with_pale_gray_and_sparse_red_mottles", "SP19"],
+            "8,41,253": ["deep_horizon", "SP20"],
+            "0,1,254": ["shallow_horizon", "SP21"],
+            "217,60,97": ["dark_yellowish_brown", "SP22"],
+            "211,76,222": ["yellowish_brown", "SP23"],
+            "90,16,207": ["grayish_yellow", "SP24"]
+        }
+    },
+    "soil_calcareousness_and_salinity_alkalinity[illustrative_diagram]": {
+        "data_type": "soil_calcareousness_and_salinity_alkalinity",
+        "color_to_value": {
+            "243,95,24": ["none", "None"],
+            "235,216,95": ["calcareous", "SCSA1"],
+            "226,2,96": ["calcareous_nodules", "SCSA2"],
+            "10,235,107": ["alkaline", "SCSA3"]
+        }
+    },
+    "soil_texture[illustrative_diagram]": {
+        "data_type": "soil_texture",
+        "color_to_value": {
+            "185,207,248": ["coarse_sand_co_sand", [0.9,0.05,0.05]],
+            "245,235,253": ["fine_sand_co_loamy_coarse_sand_co_loamy_sand", [0.8, 0.12, 0.08]],
+            "227,158,107": ["loamy_fine_sand_co_coarse_sandy_loam_co_sandy_loam_co_fine_sandy_loam", [0.6, 0.25, 0.15]],
+            "184,88,76": ["very_fine_sand_co_loamy_very_fine_sand_co_very_fine_sandy_loam", [0.35, 0.5, 0.15]],
+            "207,252,77": ["silt_or_silt_loam", [0.15, 0.75, 0.1]],
+            "97,249,11": ["loam", [0.4, 0.4, 0.2]],
+            "97,249,12": ["loam", [0.4, 0.4, 0.2]],
+            "11,211,251": ["sandy_clay_loam", [0.55, 0.15, 0.3]],
+            "107,178,253": ["clay_loam_co_silty_clay_loam", [0.3, 0.35, 0.35]],
+            "107,178,254": ["clay_loam_co_silty_clay_loam", [0.3, 0.35, 0.35]],
+            "46,63,247": ["silty_clay", [0.1, 0.5, 0.4]],
+            "241,39,80": ["clay", [0.2, 0.3, 0.5]],
+            "242,140,240": ["gravel", "None"]
+        }
+    },
+    "soil_ph[illustrative_diagram]": {
+        "data_type": "soil_ph",
+        "color_to_value": {
+            "237,82,239": ["ph<4.5", 4.3],
+            "3,5,245": ["ph4.6-5.0", 4.8],
+            "22,30,155": ["ph5.1-5.5", 5.3],
+            "12,47,143": ["ph5.6-6.0", 5.8],
+            "171,231,237": ["ph6.1-6.5", 6.3],
+            "1,254,3": ["ph6.6-7.3", 7],
+            "211,250,86": ["ph7.4-7.8", 7.6],
+            "232,216,173": ["ph7.9-8.4", 8.2],
+            "250,111,82": ["ph8.5-9.0", 8.7]
+        }
+    },
+    "parent_material_property[illustrative_diagram]": {
+        "data_type": "parent_material_property",
+        "color_to_value": {
+            "172,215,245": ["andesite", "PMP1"],
+            "240,230,227": ["composite_igneous_rock", "PMP2"],
+            "246,190,11": ["schist", "PMP3"],
+            "204,209,79": ["sandstone-shale_and_alluvial_deposit_mixture", "PMP4"],
+            "93,166,45": ["slate_and_sandstone-shale_mixture", "PMP5"],
+            "32,198,93": ["lateritic_deposit_and_limestone_mixture", "PMP6"],
+            "5,253,6": ["sandstone_and_lateritic_deposit", "PMP7"],
+            "15,223,252": ["schist_and_lateritic_deposit", "PMP8"],
+            "143,90,188": ["lateritic_soil", "PMP9"],
+            "54,90,222": ["sandstone-shale", "PMP10"],
+            "29,20,166": ["slate", "PMP11"],
+            "0,7,245": ["mudstone_and_sandstone-shale_mixture", "PMP12"],
+            "255,3,252": ["mudstone_and_igneous_rock_mixture", "PMP13"],
+            "240,91,241": ["mudstone_co_sandstone-shale_and_igneous_rock_mixture", "PMP14"]
+        }
+    }
+}

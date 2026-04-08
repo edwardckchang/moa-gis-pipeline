@@ -1,0 +1,15 @@
+.env
+output/*
+GIS/*.zip
+logs/*
+__pycache__/
+*.pyc
+*.parquet
+temp.*
+test.*
+metadata/
+!output/.gitkeep
+!logs/.gitkeep
+old_file/
+farmland_spatial_map/*.json
+farmland_spatial_map/*.pdf

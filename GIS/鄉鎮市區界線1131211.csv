@@ -1,0 +1,3 @@
+﻿項目,服務來源,服務類別,服務代碼,坐標系統,介接網址,介接範例
+鄉鎮市區界線(WMS),國土測繪圖資服務雲,WMS,LANDSECT,EPSG:4326,http://maps.nlsc.gov.tw/wms,"https://wms.nlsc.gov.tw/wms?SRS=EPSG:4326&HEIGHT=400&WIDTH=600&REQUEST=GetMap&TRANSPARENT=TRUE&VERSION=1.1.1&LAYERS=TOWN&STYLES=default&BBOX=120.190057,25.302059,122.200555,23.843379&FORMAT=image%2Fjpeg"
+鄉鎮市區界線(WMTS),國土測繪圖資服務雲,WMTS,LANDSECT,EPSG:3857,http://maps.nlsc.gov.tw/wmts,https://wmts.nlsc.gov.tw/wmts/TOWN/default/EPSG%3A3857/6/27/53
