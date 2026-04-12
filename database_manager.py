@@ -33,7 +33,7 @@ def _ensure_connection(conn: Optional[psycopg2.extensions.connection]) -> bool:
         return False
     return True
 
-def _execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
+def execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
     """
     執行 SQL 查詢，並可選擇返回單條或所有結果。
     自動處理游標關閉和事務提交/回滾。
@@ -69,7 +69,7 @@ def _execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = F
     finally:
         cur.close()
         
-def _table_exists(conn, table_name: str) -> bool:
+def table_exists(conn, table_name: str) -> bool:
     """
     檢查指定表格是否存在於資料庫中。
     """
@@ -92,7 +92,7 @@ def _table_exists(conn, table_name: str) -> bool:
     finally:
         cur.close()
         
-def _get_all_tables(conn) -> List[str]:
+def get_all_tables(conn) -> List[str]:
     """
     獲取資料庫中所有表格的名稱。
     """
@@ -115,25 +115,25 @@ def _get_all_tables(conn) -> List[str]:
     finally:
         cur.close()
         
-def _ensure_columns_exist(conn, table_name: str, columns: list[str]) -> bool:
+def ensure_columns_exist(conn, table_name: str, columns: list[str]) -> bool:
     """
     確保表格中存在指定的所有欄位，若缺少則自動新增（類型預設 TEXT）。
     columns 為欄位名稱字串列表（未加引號的原始名稱）。
     """
     if not _ensure_connection(conn):
         return False
-    existing_result = _execute_sql(
+    existing_result = execute_sql(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s;",
         (table_name,), fetch_all=True
     )
     if existing_result is False or existing_result is None:
-        logger.error(f"_ensure_columns_exist: 無法取得表格 '{table_name}' 的欄位資訊。")
+        logger.error(f"ensure_columns_exist: 無法取得表格 '{table_name}' 的欄位資訊。")
         return False
     existing_cols = {row['column_name'] for row in existing_result}
     for col in columns:
         if col not in existing_cols:
             alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" TEXT;'
-            if _execute_sql(alter_sql):
+            if execute_sql(alter_sql):
                 logger.warning(f"表格 '{table_name}' 新增欄位: {col}")
             else:
                 logger.error(f"表格 '{table_name}' 新增欄位 '{col}' 失敗。")
@@ -215,7 +215,7 @@ def execute_upsert(
     )
     values = tuple(record[c] for c in cols)
 
-    result = _execute_sql(conn, sql, values)
+    result = execute_sql(conn, sql, values)
     if result is False:
         logger.error(
             f"execute_upsert 失敗：table={table_name}, "

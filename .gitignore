@@ -1,6 +1,5 @@
 .env
 output/*
-GIS/*.zip
 logs/*
 __pycache__/
 *.pyc
@@ -12,4 +11,3 @@ metadata/
 !logs/.gitkeep
 old_file/
 farmland_spatial_map/*.json
-farmland_spatial_map/*.pdf

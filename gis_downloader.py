@@ -1,8 +1,6 @@
 import requests
 import cv2
 import numpy as np
-import os
-from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from logs_handle import logger
 
@@ -43,22 +41,3 @@ def fetch_wms_image(url):
     except Exception as e:
         logger.error(f"下載 WMS 影像時發生錯誤: {e}")
         return None
-
-def save_mask_image(png, classification, country_name):
-    """
-    下載圖片並儲存到指定路徑。
-    """
-    today = datetime.now().strftime("%Y%m%d")
-    path_str = f"{country_name}_{classification}_{today}.png"
-    path = os.path.join(classification, path_str)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    """ 這裡需要讀取舊圖片，
-    讀取classification\{country_name}_{classification}名稱的檔案
-    如果有數個則讀取最後一個，並和現在的png做比對，如果圖形一樣則不存檔
-    """
-
-    with open(path, 'wb') as f:
-        f.write(png)
-    logger.notice(f"圖片已成功下載並儲存至: '{path}'")
-    return True

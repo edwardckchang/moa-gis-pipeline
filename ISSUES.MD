@@ -10,14 +10,14 @@
 ## Phase 1：專案基礎建設
 
 ### Issue 1：專案初始化與骨架建立
-**狀態：** 🔄 進行中
+**狀態：** ✅ 進行中
 
 #### 開發環境
-- [ ] 在新專案根目錄執行 `git init`
+- [X] 在新專案根目錄執行 `git init`
 - [X] 建立 `.gitignore`
-  - 排除：`.env`、`output/*`、`GIS/*.shp`、`GIS/*.dbf`、`GIS/*.shx`、`GIS/*.prj`、
-           `logs/*`、`__pycache__/`、`*.pyc`、`*.csv`、`*.parquet`
-  - 保留：`GIS/.gitkeep`、`output/.gitkeep`、`logs/.gitkeep`
+  - 排除：`.env`、`output/*`、`GIS/*.zip`、`logs/*`、`__pycache__/`、`*.pyc`、`*.parquet`、`temp.*`、
+          `test.*`、`metadata/`、`old_file/`、`farmland_spatial_map/*.json`
+  - 保留：`output/.gitkeep`、`logs/.gitkeep`
 - [X] 建立 `.env`（含 `USERNAME`、`PASSWORD`、`DBNAME`）
 - [X] 建立 `.env.example`（含欄位名稱但值為空，提交進 git）
 - [ ] 建立 `requirements.txt`
@@ -59,10 +59,10 @@
 - [X] 從舊版遷移並修改簽名：`connect_db()`（每次呼叫回傳新 conn，不修改全域狀態）
 - [X] 新增：`disconnect_db(conn)`
 - [X] 從舊版遷移並修改簽名：`_ensure_connection(conn)`（原名 `_ensure_db_connection`）
-- [X] 從舊版遷移並修改簽名：`_execute_sql(conn, sql, params, *, fetch_one, fetch_all)`
-- [X] 從舊版遷移並修改簽名：`_table_exists(conn, table_name)`
-- [X] 從舊版遷移並修改簽名：`_get_all_tables(conn)`
-- [X] 從舊版遷移並修改簽名：`_ensure_columns_exist(conn, table_name, columns)`
+- [X] 從舊版遷移並修改簽名：`execute_sql(conn, sql, params, *, fetch_one, fetch_all)`
+- [X] 從舊版遷移並修改簽名：`table_exists(conn, table_name)`
+- [X] 從舊版遷移並修改簽名：`get_all_tables(conn)`
+- [X] 從舊版遷移並修改簽名：`ensure_columns_exist(conn, table_name, columns)`
 - [X] 從舊版遷移：`table_columns_sql()`
 - [X] 新增：`execute_upsert(conn, table_name, record, conflict_columns)`
 - [X] 以下全部不遷移：
@@ -85,63 +85,60 @@
 
 #### 驗證
 - [X] 所有模組可正常 import 不報錯
-- [ ] `database_manager.py` 可成功連線至本機 PostgreSQL
-- [ ] `git status` 確認 `.env` 未被追蹤，其餘檔案正常
-- [ ] 進行第一次 `git commit`
+- [X] `database_manager.py` 可成功連線至本機 PostgreSQL
+- [X] `git status` 確認 `.env` 未被追蹤，其餘檔案正常
+- [X] 進行第一次 `git commit`
 
 ---
 
 ### Issue 2：函式預填入骨架模組
-**狀態：** ⬜ 待開始
+**狀態：** ✅ 待開始
 **前置條件：** Issue 1 完成
 
 #### `gis_reader.py` 填入
-- [ ] 從舊 `GIS_reader.py` 遷移：`natural_sort_key()`
-- [ ] 從舊 `GIS_reader.py` 遷移：`get_width_height_from_geographic_mapping()`
+- [X] 從舊 `GIS_reader.py` 遷移：`natural_sort_key()`
+- [X] 從舊 `GIS_reader.py` 遷移：`get_width_height_from_geographic_mapping()`
   - 移除 `print()` 改用 `logger.notice()`
-- [ ] 從舊 `GIS_reader.py` 遷移：`png_geographic_mapping()`
+- [X] 從舊 `GIS_reader.py` 遷移：`png_geographic_mapping()`
   - 介面調整：接受 `bytes` 物件而非 `png_path` 字串
   - 原因：對話三 WMS 下載後不落地，直接在記憶體處理
-- [ ] 從舊 `GIS_reader.py` 遷移：`shp_reader()`
-- [ ] 移除舊 `GIS_reader.py` 頂層副作用程式碼（`shp_path = ...` 區段）
-- [ ] 確認所有 `print()` 改為 `logger` 對應層級
+- [X] 從舊 `GIS_reader.py` 遷移：`shp_reader()`
+- [X] 確認所有 `print()` 改為 `logger` 對應層級
 
 #### `gis_downloader.py` 填入
-- [ ] 從舊 `GIS_reader.py` 遷移：`replace_url_parameters()`
+- [X] 從舊 `GIS_reader.py` 遷移：`replace_url_parameters()`
   - 注意：`data_parser.py` 有完全相同的函式，取一份即可
-- [ ] 從舊 `data_parser.py` 遷移：`_download_and_save_image()`
-- [ ] 從舊 `data_parser.py` 遷移：`_fetch_data_logic()`（含重試機制）
-- [ ] 從舊 `data_parser.py` 遷移：`detect_optimal_skip()`
-  - 標注為農業 API 備用，本專案 WMS 不使用分頁下載
+- [X] 從舊 `data_parser.py` 遷移：`_download_and_save_image()`，由`fetch_wms_image()`取代
 
 #### `gis_quantifier.py` 填入
-- [ ] 從舊 `build_base_para.py` 遷移：`load_image_with_chinese_path()`
-- [ ] 從舊 `build_base_para.py` 遷移：`decode_png_color_value()`
+- [X] 從舊 `build_base_para.py` 遷移：`load_image_with_chinese_path()`
+- [X] 從舊 `build_base_para.py` 遷移：`decode_png_color_value()`
   - 移除 `print()` 改用 `logger`
+- [X] 新增：`save_mask_image(png, classification, country_name)`
 
 #### `gis_db.py` 填入
 - [X] 新增函式`infer_schema_from_geodataframe(gdf: gpd.GeoDataFrame)`
-- [ ] 從舊 `main.py` 遷移：`get_count(conn, table_name)`（加 `conn` 參數）
-- [ ] 從舊 `build_base_para.py` 遷移：`add_color_mapping_level1()`
+- [X] 從舊 `main.py` 遷移：`get_count(conn, table_name)`（加 `conn` 參數）
+- [X] 從舊 `build_base_para.py` 遷移：`add_color_mapping_level1()`
   - 修正 bug：第 123 行 `png.dtype` 參照未定義變數，改為固定 `np.uint8`
   - 調整：`METADATA_FILE` 路徑改為新專案的 `geographic_color_metadata.json`
 
 #### `analysis_pipeline.py` 填入
-- [ ] 從舊 `data_preprocessor.py` 遷移：`analyze_and_clean_dataframe()`
+- [X] 從舊 `data_preprocessor.py` 遷移：`analyze_and_clean_dataframe()`
 
 #### import 路徑統一檢查
-- [ ] 所有遷移的函式確認 import 來源已改為新專案模組
+- [X] 所有遷移的函式確認 import 來源已改為新專案模組
   - 應使用：`logs_handle`、`utils`、`file_utils`、`cli_utils`、`database_manager`
-- [ ] 確認沒有任何模組仍 import 舊專案的
+- [X] 確認沒有任何模組仍 import 舊專案的
   - `menu_utils`、`json_file_operations`、`sort_data_by_date`、`database_manager`（舊版）
 
 #### 驗證
-- [ ] 逐一 import 各模組確認無錯誤
-- [ ] `gis_reader.natural_sort_key()` 單元測試
+- [X] 逐一 import 各模組確認無錯誤
+- [X] `gis_reader.natural_sort_key()` 單元測試
   - 輸入 `["TOWN10", "TOWN2", "TOWN1"]`，排序結果應為 `["TOWN1", "TOWN2", "TOWN10"]`
-- [ ] `gis_reader.get_width_height_from_geographic_mapping()` 單元測試
-  - 輸入台灣全島 BBOX `(119.3, 21.9, 122.1, 25.4)`，結果應約為 `(311, 389)`（100m/px）
-- [ ] `git commit`
+- [X] `gis_reader.get_width_height_from_geographic_mapping()` 單元測試
+  - 輸入台灣全島 BBOX `(119.3, 21.9, 122.1, 25.4)`，結果應約為 `(311, 389)`（100m/px），實際：`(2857, 3876)`
+- [x] `git commit`
 
 ---
 
@@ -150,10 +147,10 @@
 **前置條件：** Issue 1 完成
 
 #### Git 使用規範建立
-- [ ] 確認 `.gitignore` 涵蓋所有不應追蹤的檔案
-- [ ] 在 GitHub 建立 private repository
-- [ ] 推送 Issue 1、Issue 2 的成果作為初始 commit
-- [ ] 建立 commit message 規範：
+- [X] 確認 `.gitignore` 涵蓋所有不應追蹤的檔案
+- [X] 在 GitHub 建立 public repository
+- [X] 推送 Issue 1、Issue 2 的成果作為初始 commit
+- [X] 建立 commit message 規範：
   - `[Setup]` 環境與骨架
   - `[Refactor]` 重構與遷移
   - `[Feature]` 新功能

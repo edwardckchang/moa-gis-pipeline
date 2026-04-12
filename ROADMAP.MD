@@ -20,7 +20,7 @@
   - gis_quantifier.py、analysis_pipeline.py
   - main_gis.py、main_pipeline.py
 - 🔄 將現有可用函式填入骨架模組
-- ⬜ 建立 git 版本控制與資料備份策略
+- 🔄 建立 git 版本控制與資料備份策略
 - ✅ 確認專案資料夾結構
 
 ---
