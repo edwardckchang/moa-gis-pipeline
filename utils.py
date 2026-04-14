@@ -4,6 +4,8 @@ from logs_handle import logger
 import datetime
 import pandas as pd
 from typing import Optional, List
+from datetime import datetime
+import inspect
 
 MAX_NAME_LENGTH_BYTES = 63 # PostgreSQL NAMEDATALEN - 1 (for null terminator)
 MAX_NAME_LENGTH_CHARS = 21 # 21 中文字 = 63 位元組 (假設 UTF-8 一個中文佔 3 位元組)
@@ -343,7 +345,7 @@ def process_string(input_string: str) -> str:
     
     return final_string
 
-def _clean_string(text: str) -> str:
+def clean_string(text: str) -> str:
     """
     清理字串，移除標點符號和符號，並轉換為小寫。
     """
@@ -351,3 +353,75 @@ def _clean_string(text: str) -> str:
         return ""
     text = re.sub(r'[^\w\s]', '', text) # 移除標點符號和符號
     return text.lower().strip()
+
+# ================= 1. 全域變數 =================
+CHECKPOINT_ENABLED = False
+PASS = False
+
+# ================= 2. 核心檢查類別 =================
+class Checkpoint:
+    def __init__(self, label: str):
+        self.label = label
+
+    # 「進門」要做的事 (with 開始時執行)
+    def __enter__(self):
+        if not CHECKPOINT_ENABLED:
+            return None  # 回傳 None，後面的 if cp 就會跳過
+        
+        # 取得是誰在呼叫 (這行很直觀，就是找上一層的函式名)
+        self.caller = inspect.stack()[1].function
+        print(f"\n{'='*20} [CHECKPOINT: {self.caller}] {'='*20}")
+        print(f"Label: {self.label}")
+        return self  # 回傳自己，這樣才能用 cp.show()
+
+    # 「出門」要做的事 (with 結束時執行)
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if CHECKPOINT_ENABLED and PASS:
+            input("\n>>> [PAUSED] 按 Enter 繼續...")
+            print(f"{'='*50}\n")
+
+    # 功能函式：漂亮的印出資料
+    def show(self, name: str, data):
+        prefix = "    "
+        print(f"\n  [Data] {name}:")
+        
+        # 1. 處理字典 (因為字典轉 list 只會剩下 Key，所以要分開處理)
+        if isinstance(data, dict):
+            items = list(data.items())
+            print(f"{prefix}(Type: Dict, Keys: {len(data)})")
+            for i, (k, v) in enumerate(items[:3]):
+                print(f"{prefix}[{i}] {k}: {v} [Type: {type(v).__name__}]")
+            if len(items) > 3: print(f"{prefix}...")
+            return # 處理完字典直接結束
+
+        # 2. 處理表格型資料 (Pandas/Numpy) 與 一般列表
+        # 我們直接嘗試拿前 3 筆，不論它是什麼型態
+        try:
+            # 如果是 Pandas，它有 head() 最好用
+            if hasattr(data, 'head'):
+                print(f"{prefix}(Type: {type(data).__name__}, Shape: {getattr(data, 'shape', 'N/A')})")
+                print(data.head(3))
+            
+            # 如果是 Numpy 或一般 List，我們直接用切片 [0:3]
+            else:
+                # 轉成 list 方便統一印出格式
+                preview = list(data) 
+                print(f"{prefix}(Type: {type(data).__name__}, Total: {len(preview)})")
+                for i, item in enumerate(preview[:3]):
+                    print(f"{prefix}[{i}] {item} [Type: {type(item).__name__}]")
+                if len(preview) > 3: print(f"{prefix}...")
+                
+        except Exception:
+            # 如果上面的嘗試都失敗了（例如資料不能被轉成 list），就直接嘗試切片硬印
+            preview_data = data
+            try:
+                preview_data = data[0:3]
+            except:
+                pass
+            print(f"{prefix}Value: {preview_data} [Type: {type(data).__name__}]")
+
+# ================= 3. 主模組初始化函式 =================
+def init_checkpoint(enabled: bool, pause: bool):
+    global CHECKPOINT_ENABLED, PASS
+    CHECKPOINT_ENABLED = enabled
+    PASS = pause

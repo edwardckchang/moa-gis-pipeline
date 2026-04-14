@@ -2,6 +2,7 @@
 output/*
 logs/*
 __pycache__/
+backups/
 *.pyc
 *.parquet
 temp.*

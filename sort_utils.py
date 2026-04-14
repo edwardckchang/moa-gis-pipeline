@@ -87,7 +87,7 @@ def sort_list_of_dictionaries(data: list[dict], sort_keys: list[list[str, str]])
     # 步驟 3: 從排序後的元組中提取原始項目
     return [item for key, item in sorted_items_with_keys]
 
-def _interactive_sort_data(data: list[dict], predefined_sort_keys: list[list[str, str]] = None) -> tuple[list[dict], list[list[str, str]]]:
+def interactive_sort_data(data: list[dict], predefined_sort_keys: list[list[str, str]] = None) -> tuple[list[dict], list[list[str, str]]]:
     """
     引導使用者選擇排序欄位和類型，然後對資料進行排序。
     如果提供了 predefined_sort_keys，則直接使用這些鍵進行排序。

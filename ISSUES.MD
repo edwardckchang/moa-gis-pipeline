@@ -15,14 +15,15 @@
 #### 開發環境
 - [X] 在新專案根目錄執行 `git init`
 - [X] 建立 `.gitignore`
-  - 排除：`.env`、`output/*`、`GIS/*.zip`、`logs/*`、`__pycache__/`、`*.pyc`、`*.parquet`、`temp.*`、
+  - 排除：`.env`、`output/*`、`logs/*`、`__pycache__/`、`*.pyc`、`*.parquet`、`temp.*`、
           `test.*`、`metadata/`、`old_file/`、`farmland_spatial_map/*.json`
   - 保留：`output/.gitkeep`、`logs/.gitkeep`
-- [X] 建立 `.env`（含 `USERNAME`、`PASSWORD`、`DBNAME`）
+- [X] 建立 `.env`（含 `DB_USER`、`DB_PASSWORD`、`DB_NAME`）
 - [X] 建立 `.env.example`（含欄位名稱但值為空，提交進 git）
-- [ ] 建立 `requirements.txt`
+- [X] 建立 `requirements.txt`
   - 套件：`geopandas`、`rasterio`、`shapely`、`psycopg2`、`pandas`、`numpy`、`Pillow`、
           `vincenty`、`tqdm`、`python-dotenv`、`locale`、`json`
+  - 使用pip-chill > requirements.txt，每個階段完成須執行一次
 - [X] 確認 Python 3.9 環境可正常安裝所有套件
 
 #### 資料夾結構
@@ -109,12 +110,13 @@
 - [X] 從舊 `GIS_reader.py` 遷移：`replace_url_parameters()`
   - 注意：`data_parser.py` 有完全相同的函式，取一份即可
 - [X] 從舊 `data_parser.py` 遷移：`_download_and_save_image()`，由`fetch_wms_image()`取代
+- [X] 新增：`save_mask_image(png, classification, country_name)`
+  -從`gis_quantifier.py` 遷移
 
 #### `gis_quantifier.py` 填入
 - [X] 從舊 `build_base_para.py` 遷移：`load_image_with_chinese_path()`
 - [X] 從舊 `build_base_para.py` 遷移：`decode_png_color_value()`
   - 移除 `print()` 改用 `logger`
-- [X] 新增：`save_mask_image(png, classification, country_name)`
 
 #### `gis_db.py` 填入
 - [X] 新增函式`infer_schema_from_geodataframe(gdf: gpd.GeoDataFrame)`
@@ -158,37 +160,35 @@
   - `[Data]` 資料相關變動
 
 #### 資料庫備份策略
-- [ ] 確認 `pg_dump` 可正常執行
-  ```
-  pg_dump -U {USERNAME} -d {DBNAME} -f backup_{date}.sql
-  ```
-- [ ] 建立備份目錄結構（加入 `.gitignore`）
+- [X] 確認 `pg_dump` 可正常執行
+  - 備份指令：
+    $env:PGPASSWORD = "你的資料庫密碼"
+    $date = Get-Date -Format "yyyyMMdd"
+    pg_dump -U $DB_USER -d $DB_NAME -f "backups/moa_opendata/backup_$($date).sql"
+    新增檔案 `backup_db.py` 與函式 `run_manual_backup` 用於手動備份。
+- [X] 建立備份目錄結構（加入 `.gitignore`）
   ```
   backups/
   └── moa_opendata/    ← GIS 資料與農業統計數據共用同一資料庫，統一備份
   ```
-- [ ] 決定備份頻率（建議：每個 Phase 完成後手動執行一次）
-- [ ] 確認備份檔案會同步到外部儲存（外接硬碟或雲端）
+- [X] 決定備份頻率（建議：每個 Phase 完成後手動執行一次）
+- [X] 確認備份檔案會同步到外部儲存（USB）
 
 #### `geographic_color_metadata.json` 定位確認
-- [ ] 確認此檔案進入 git 追蹤（設定檔性質，幾 KB，適合 git 管理）
-- [ ] 確認此檔案**不入庫**
+- [X] 確認此檔案進入 git 追蹤（設定檔性質，幾 KB，適合 git 管理）
+- [X] 確認此檔案**不入庫**
   - 原因：`color_to_value` 為異質結構，入庫複雜度高、收益低；git 已提供版本追蹤能力
-- [ ] 在 `gis_db.py` 的 docstring 中記錄此決策
+- [X] 在 `gis_db.py` 的 docstring 中記錄此決策
 
 #### 輸出檔案備份策略
-- [ ] 確認 `output/` 目錄下的 CSV/Parquet 不進入 git
-- [ ] 建立輸出檔案命名規範
+- [X] 確認 `output/` 目錄下的 CSV/Parquet 不進入 git
   ```
-  GIS_processed_{layer}_{YYYYMMDD}.csv
-  GIS_processed_{layer}_{YYYYMMDD}.parquet
-  ```
-- [ ] 確認輸出檔案會定期備份到外部儲存
+- [X] 確認輸出檔案會定期備份到外部儲存
 
 #### 驗證
-- [ ] GitHub repository 可正常推送與拉取
-- [ ] `pg_dump` 執行成功，備份檔案可正常還原（`psql` 測試）
-- [ ] `git log` 確認有清晰的 commit 歷史
+- [X] GitHub repository 可正常推送與拉取
+- [X] `pg_dump` 執行成功，備份檔案可正常還原（`psql` 測試）
+- [X] `git log` 確認有清晰的 commit 歷史
 
 ---
 
@@ -199,6 +199,7 @@
 **前置條件：** Phase 1 全部完成
 
 > Checklist 於 Phase 2 開始時補充
+- [ ] 建立 `requirements.txt`
 
 ---
 
@@ -209,6 +210,7 @@
 **前置條件：** Phase 2 完成
 
 > Checklist 於 Phase 3 開始時補充
+- [ ] 建立 `requirements.txt`
 
 ---
 
@@ -219,7 +221,12 @@
 **前置條件：** Phase 3 完成
 
 > Checklist 於 Phase 4 開始時補充
+- [ ] 建立 `requirements.txt`
 
+- [ ] 建立輸出檔案命名規範
+  ```
+  GIS_processed_{layer}_{YYYYMMDD}.csv
+  GIS_processed_{layer}_{YYYYMMDD}.parquet
 ---
 
 ## Phase 5：特徵工程與訓練集輸出
@@ -229,9 +236,11 @@
 **前置條件：** Phase 4 完成
 
 > Checklist 於 Phase 5 開始時補充
+- [ ] 建立 `requirements.txt`
 
 ### Issue 8：main_pipeline.py 與 argparse
 **狀態：** ⬜ 待開始
 **前置條件：** Issue 7 完成
 
 > Checklist 於 Phase 5 開始時補充
+- [ ] 建立 `requirements.txt`

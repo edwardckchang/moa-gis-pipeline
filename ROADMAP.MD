@@ -11,16 +11,16 @@
 
 ## Milestone 1 — 專案基礎建設
 
-- 🔄 清理並重構繼承自舊專案的模組
+- ✅ 清理並重構繼承自舊專案的模組
   - utils.py（精簡＋補充）
   - database_manager.py（架構改動：conn 由呼叫端持有）
   - 新增 sort_utils.py、file_utils.py、cli_utils.py
-- 🔄 建立新專案模組骨架
+- ✅ 建立新專案模組骨架
   - gis_db.py、gis_reader.py、gis_downloader.py
   - gis_quantifier.py、analysis_pipeline.py
   - main_gis.py、main_pipeline.py
-- 🔄 將現有可用函式填入骨架模組
-- 🔄 建立 git 版本控制與資料備份策略
+- ✅ 將現有可用函式填入骨架模組
+- ✅ 建立 git 版本控制與資料備份策略
 - ✅ 確認專案資料夾結構
 
 ---

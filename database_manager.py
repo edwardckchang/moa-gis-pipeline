@@ -68,6 +68,33 @@ def execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = Fa
         return False # 查詢或操作失敗
     finally:
         cur.close()
+
+def generate_global_data():
+    """
+    這個函數用來生成 GLOBAL_METADATA_CACHE 的值。(字典)
+    """
+    if not _ensure_connection(conn):
+        return {}
+    if not table_exists("metadata_index"):
+        return {}
+    logger.notice("INFO: 正在從資料庫生成 metadata...")
+    sql_query = "SELECT * FROM metadata_index;"
+    all_metadata_records = execute_sql(sql_query, fetch_all=True)
+    if all_metadata_records:
+        for record in all_metadata_records:
+            table_name = record.get('category_table_id')
+            if table_name and table_exists(table_name):
+                count_sql = f"SELECT COUNT(*) as total_count FROM \"{table_name}\";"
+                count_res = execute_sql(count_sql, fetch_one=True)
+                record['資料筆數'] = count_res[0] if count_res else 0
+            else:
+                record['資料筆數'] = 0
+        metadata_dict = {record['category_table_id']: record for record in all_metadata_records}
+        logger.notice(f"INFO: 已生成 {len(metadata_dict)} 條 metadata 記錄。")
+        return metadata_dict
+    else:
+        logger.warning("WARNING: 未能從資料庫生成任何 metadata 記錄。")
+        return {}
         
 def table_exists(conn, table_name: str) -> bool:
     """
@@ -227,10 +254,10 @@ def execute_upsert(
 if __name__ == "__main__":
     from dotenv import dotenv_values
     config = dotenv_values() # 讀取 .env 檔案中的值
-    USERNAME = config.get("USERNAME")
-    PASSWORD = config.get("PASSWORD")
-    DBNAME = config.get("DBNAME")
-    conn = connect_conn(USERNAME, PASSWORD, DBNAME)
+    DB_USER = config.get("DB_USER")
+    DB_PASSWORD = config.get("DB_PASSWORD")
+    DB_NAME = config.get("DB_NAME")
+    conn = connect_conn(DB_USER, DB_PASSWORD, DB_NAME)
     if not conn:
         print("連線失敗，程式結束。")
     
