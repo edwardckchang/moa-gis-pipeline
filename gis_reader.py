@@ -228,12 +228,15 @@ def shp_reader(shp_path: str) -> gpd.GeoDataFrame:
 
     TODO（Phase 2）：
         - [ ] 加入 CRS 驗證：若 gdf.crs != EPSG:4326 則執行 gdf.to_crs("EPSG:4326")
-        - [ ] COUNTY SHP（COUNTY_MOI_1140318.shp）的排序欄位可能為 COUNTYID，
-              需確認後以參數化方式支援（sort_column: str = "TOWNID"）
-        - [ ] 考慮加入必要欄位存在性檢查（TOWNID、TOWNNAME、geometry）
     """
     shp_path_nor = os.path.normpath(shp_path)# --- 自動判定排序欄位 ---
     # 使用 lower() 判斷路徑中是否包含 'county'
+    if "geometry" not in gdf.columns:
+        logger.warning(f"geometry 欄位不存在於 {shp_path_nor}，不是正確的 SHP檔案，將回傳空白 GeoDataFrame。")
+        return gpd.GeoDataFrame()
+    if "TOWNID".lower() not in gdf.columns.str.lower() or "COUNTYID".lower() not in gdf.columns.str.lower():
+        logger.warning(f"排序欄位 TOWNID 或 COUNTYID 不存在於 {shp_path_nor}，將回傳原始 GeoDataFrame。")
+        return gdf
     if 'county' in shp_path_nor.lower():
         sort_col = "COUNTYID"
     else:
