@@ -23,39 +23,18 @@ GIS 專屬資料庫操作模組，集中管理所有 GIS 相關的 SQL 邏輯。
   相關讀取邏輯集中在 add_color_mapping_level1() 與 gis_quantifier.py。
 
 TODO（Phase 2 — 層級一）：
-  - [ ] 定義資料表名稱常數：
+  - [X] 定義資料表名稱常數：直接寫於SQL語句
         TABLE_GIS_001 = "GIS_001"
         TABLE_GIS_METADATA = "GIS_metadata"
-  - [ ] 實作 create_gis_001_table(conn)：
-        建立 GIS_001 資料表，欄位由 infer_schema_from_geodataframe() 推斷，
-        PRIMARY KEY 為 TOWNID（文字型，來自 SHP 欄位）
-  - [ ] 實作 upsert_gis_001(conn, record)：
-        將單筆行政界線資料寫入 GIS_001，
-        conflict 欄位為 TOWNID，geometry 以 WKT 文字存入
-  - [ ] 實作 get_all_towns(conn) -> list[dict]：
-        從 GIS_001 讀取全部鄉鎮資料，供 geographic_mapping() 的迴圈使用。
+  - [ ] 實作 get_gis_metadata(conn) -> list[dict]：
+        從 GIS_metadata 讀取全部執行紀錄。
         每筆 dict 至少需包含：
-          - "TOWNID"：鄉鎮代碼
-          - "TOWNNAME"：鄉鎮中文名稱（供查中英對照表用）
-          - "geometry_wkt"：WKT 字串（呼叫端還原為 Shapely 物件）
-        呼叫端以 shapely.wkt.loads(row["geometry_wkt"]) 還原，
-        再取 polygon.bounds 計算 BBOX
-  - [ ] 實作 create_gis_metadata_table(conn)：
-        建立 GIS_metadata 資料表，記錄每次執行的影像儲存紀錄，
-        schema 設計見下方 log_gis_metadata() TODO
+          - 後續討論KEY為和（應為country中文名稱）
+
 
 TODO（Phase 3 — 層級二）：
-  - [ ] 實作 log_gis_metadata(conn, record)：
-        寫入單筆影像處理執行紀錄，record 應包含：
-          - "townid"：對應 GIS_001 的 TOWNID（外鍵）
-          - "classification"：圖層英文名稱
-          - "shp_version"：SHP 檔名（例如 "TOWN_MOI_1140318"），作為可追溯的界線版本
-          - "stage"："raw" 或 "masked"
-          - "status"：save_image() 回傳的 status（"created" | "updated" | "unchanged" | "error"）
-          - "file_path"：影像的完整落地路徑（save_image() 回傳的 path）
-          - "recorded_at"：寫入時間戳記（TIMESTAMP WITH TIME ZONE DEFAULT NOW()）
-        conflict 欄位建議為 (townid, classification, shp_version, stage)，
-        status 與 file_path 於衝突時更新
+  - [ ] 實作 log_gis_metadata(conn, record)
+        寫入單筆影像處理執行紀錄，資料表結構見下方 create_gis_() TODO
 
 相依模組：
   geopandas, numpy, cv2（OpenCV）
@@ -68,12 +47,14 @@ TODO（Phase 3 — 層級二）：
 import geopandas as gpd
 from file_utils import load_json_data, save_json_data
 import numpy as np
-import cv2
-import os
+import pandas as pd
+import cv2, os
 from gis_quantifier import load_image_with_chinese_path, decode_png_color_value
 from logs_handle import logger
-from database_manager import table_exists, execute_sql, table_columns_sql
-
+from database_manager import table_exists, execute_sql, ensure_columns_exist
+from tqdm import tqdm
+from sqlalchemy import create_engine
+from utils import Checkpoint
 
 def get_count(conn, table_id: str) -> str:
     """
@@ -104,7 +85,7 @@ def get_count(conn, table_id: str) -> str:
 
 def infer_schema_from_geodataframe(gdf: gpd.GeoDataFrame) -> dict:
     """
-    從 GeoDataFrame 的欄位型別推斷 metadata_schema，
+    從 GeoDataFrame 的欄位型別推斷 metadata_schema，（應是用於推斷GIS_001的欄位型別，而不是metadata？）
     供 database_manager.table_columns_sql() 轉換為 PostgreSQL 欄位定義使用。
 
     型別對應規則（pandas dtype → GIS_TYPE_MAP 標籤）：
@@ -284,93 +265,327 @@ def add_color_mapping_level1(
 # TODO（Phase 2）：實作 create_gis_metadata_table(conn) -> None
 # TODO（Phase 3）：實作 log_gis_metadata(conn, record: dict) -> bool
 
-def create_gis_polygon_table(conn) -> bool:
+def create_gis_table(conn) -> bool:
     """
-    若 GIS_001 資料表不存在，則依固定 schema 建立之。
- 
-    GIS_001 的欄位結構固定對應 TOWN_MOI SHP 的標準欄位，
-    不使用 infer_schema_from_geodataframe() 動態推斷——
-    原因：SHP 欄位在不同版本的 MOI 發布中偶有增刪，
-    固定 schema 可確保資料表結構穩定，新版 SHP 若有新欄位
-    由 ensure_columns_exist() 在入庫時補充。
- 
-    資料表 schema：
-        TOWNID      TEXT        PRIMARY KEY   鄉鎮代碼，例如 "10016010"
-        COUNTYID    TEXT                      縣市代碼，例如 "10016"
-        TOWNNAME    TEXT                      鄉鎮中文名稱，例如 "大安區"
-        COUNTYNAME  TEXT                      縣市中文名稱，例如 "臺中市"
-        geometry    geometry(Geometry, 4326)  PostGIS geometry 欄位
-        shp_version TEXT                      來源 SHP 檔名，例如 "TOWN_MOI_1140318"
-        created_at  TIMESTAMP WITH TIME ZONE  DEFAULT NOW()
- 
+    建立 GIS 專案所需的核心資料表：GIS_001 與 GIS_metadata。
+    若表格已存在則直接回傳 True。
+    """
+
+    # 1. 確認 PostGIS extension 是否安裝
+    try:
+        postgis_check = execute_sql(
+            conn,
+            "SELECT 1 FROM pg_extension WHERE extname = 'postgis';",
+            fetch_one=True
+        )
+        if not postgis_check:
+            logger.error("❌ PostGIS extension 未安裝！請先執行：CREATE EXTENSION postgis;")
+            return False
+        logger.notice("✅ PostGIS extension 已安裝")
+    except Exception as e:
+        logger.error(f"檢查 PostGIS 時發生錯誤: {e}")
+        return False
+    tables_created = True
+
+    # ====================== 建立 GIS_001 ======================
+    if not table_exists(conn, "GIS_001"):
+        logger.notice("正在建立資料表 GIS_001...")        
+        sql_gis001 = """
+        CREATE TABLE IF NOT EXISTS "GIS_001" (
+            area_id          TEXT          NOT NULL,
+            area_level       TEXT          NOT NULL CHECK (area_level IN ('county', 'town')),
+            "COUNTYID"       TEXT,
+            "COUNTYCODE"     TEXT,
+            "COUNTYNAME"     TEXT,
+            "COUNTYENG"      TEXT,
+            "TOWNID"         TEXT,
+            "TOWNCODE"       TEXT,
+            "TOWNNAME"       TEXT,
+            "TOWNENG"        TEXT,
+            geometry         geometry(Geometry, 4326) NOT NULL,
+            shp_version      TEXT          NOT NULL,
+            created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            PRIMARY KEY (area_id),
+            UNIQUE (area_id, shp_version)
+        );
+        -- 僅保留空間索引（GIS 必要），其餘一般索引移除
+        CREATE INDEX IF NOT EXISTS idx_gis001_geometry ON "GIS_001" USING GIST (geometry);
+        """        
+        if execute_sql(conn, sql_gis001):
+            logger.success("✅ GIS_001 資料表建立完成")
+        else:
+            logger.error("❌ GIS_001 建立失敗")
+            tables_created = False
+    else:
+        logger.notice("GIS_001 資料表已存在，跳過建立")
+
+    # ====================== 建立 GIS_metadata ======================
+    if not table_exists(conn, "GIS_metadata"):
+        logger.notice("正在建立資料表 GIS_metadata...")        
+        sql_metadata = """
+        CREATE TABLE IF NOT EXISTS "GIS_metadata" (
+            id               SERIAL        PRIMARY KEY,
+            area_id          TEXT          NOT NULL,
+            area_level       TEXT          NOT NULL,
+            classification   TEXT          NOT NULL,     -- 圖層英文名稱
+            shp_version      TEXT          NOT NULL,
+            stage            TEXT          NOT NULL CHECK (stage IN ('raw', 'masked')),
+            file_path        TEXT          NOT NULL,
+            layer_updated    BOOLEAN       DEFAULT FALSE,
+            recorded_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE (area_id, classification, shp_version, stage)
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_gismeta_batch_load ON "GIS_metadata" (shp_version, classification)
+        INCLUDE (stage, area_id, file_path);
+        CREATE INDEX IF NOT EXISTS idx_gismeta_file_path ON "GIS_metadata" (file_path);
+        """        
+        if execute_sql(conn, sql_metadata):
+            logger.success("✅ GIS_metadata 資料表建立完成")
+        else:
+            logger.error("❌ GIS_metadata 建立失敗")
+            tables_created = False
+    else:
+        logger.notice("GIS_metadata 資料表已存在，跳過建立")
+    if tables_created:
+        logger.notice("🎉 create_gis_table 執行完成，所有必要表格已就緒")
+        return True
+    else:
+        logger.error("⚠️ 部分表格建立失敗")
+        return False
+
+def load_map_links(conn) -> list[dict]:
+    metadata = generate_metadata()
+
+    maps_tableid = [k for k, v in metadata.items() if "102" in k]
+    maps_data = []
+    for map_tableid in maps_tableid:
+        sql_query = f'SELECT * FROM "{map_tableid}";'
+        maps_data.extend(
+            execute_sql(conn, sql_query, fetch_all=True)
+        )
+    map_links = {d.get("圖檔中文名稱"): d.get("資料介接") for d in maps_data}
+    return map_links
+
+def generate_metadata(conn):
+    """
+    這個函數用來生成 metadata 資料。(字典)
+    """
+    if not table_exists("metadata_index"):
+        return {}
+    sql_query = "SELECT * FROM metadata_index;"
+    all_metadata_records = execute_sql(conn, sql_query, fetch_all=True)
+    if all_metadata_records:
+        metadata_dict = {record['category_table_id']: record for record in all_metadata_records}
+        logger.notice(f"INFO: 已生成 {len(metadata_dict)} 條 metadata 記錄。")
+        return metadata_dict
+    else:
+        logger.warning("WARNING: 未能從資料庫生成任何 metadata 記錄。")
+        return {}
+
+def load_all_polygon_coords(conn, area_level: str = None) -> gpd.GeoDataFrame:
+    """
+    從 GIS_001 讀取行政區資料，回傳 GeoDataFrame（geometry 已強制轉為 MultiPolygon）。
+
+    返回值特性：
+        - gdf.geometry 全部為 shapely.geometry.MultiPolygon（含單一 Polygon 也自動包裝）
+        - 與直接 gpd.read_file(SHP) 的 geometry 格式完全一致
+        - 可直接用於後續 BBOX 計算、png_geographic_mapping() 等
+
     Args:
-        conn: 使用中的 psycopg2 connection 物件。
- 
+        conn: moa_gis 連線物件
+        area_level: 可選 'county' 或 'town'，未來擴充用
+
     Returns:
-        bool: 建立成功（或資料表已存在）回傳 True；失敗回傳 False。
- 
-    Notes:
-        - geometry 欄位使用 PostGIS 原生型別，需確認 PostGIS extension 已安裝
-        - TOWNID 為 PRIMARY KEY，upsert 時以此為 conflict 欄位
-        - shp_version 欄位記錄本筆資料來自哪個版本的 SHP，
-          行政界線更新時可依此欄位識別哪些鄉鎮是新版本寫入
- 
-    TODO（Phase 2）：
-        - [ ] 實作本函式：
-              1. 若 table_exists(conn, TABLE_GIS_001) 則直接回傳 True
-              2. 組裝 CREATE TABLE SQL（參考上方 schema）
-              3. 呼叫 execute_sql(conn, sql) 執行
-              4. 再次 table_exists() 確認建立成功
-        - [ ] 確認 PostGIS extension 是否已在目標資料庫安裝：
-              SELECT 1 FROM pg_extension WHERE extname = 'postgis';
-              若未安裝則 logger.error 並回傳 False
+        gpd.GeoDataFrame 或空 DataFrame（失敗時）
+    """
+    if not table_exists(conn, "GIS_001"):
+        logger.warning("GIS_001 表格不存在，無法載入資料。")
+        return gpd.GeoDataFrame()
+
+    # 1. 建立 SQLAlchemy Engine（僅此處使用，讀完立即釋放）
+    try:
+        dsn = conn.dsn
+        dsn_parts = dict(item.split("=") for item in dsn.split() if "=" in item)
+        sa_url = (
+            f"postgresql+psycopg2://{dsn_parts.get('user', '')}:"
+            f"{dsn_parts.get('password', '')}@"
+            f"{dsn_parts.get('host', 'localhost')}:"
+            f"{dsn_parts.get('port', '5432')}/"
+            f"{dsn_parts.get('dbname', '')}"
+        )
+        engine = create_engine(sa_url)
+    except Exception as e:
+        logger.error(f"建立 SQLAlchemy engine 失敗: {e}")
+        return gpd.GeoDataFrame()
+
+    # 2. SQL 強制轉 MultiPolygon
+    where_clause = ""
+    params = None
+    if area_level in ("county", "town"):
+        where_clause = "WHERE area_level = %s"
+        params = (area_level,)
+
+    query = f"""
+        SELECT 
+            *,
+            ST_Multi(geometry) AS geometry
+        FROM "GIS_001"
+        {where_clause}
+        ORDER BY area_id;   -- 確保自然排序
+    """
+
+    try:
+        gdf = gpd.read_postgis(
+            sql=query,
+            con=engine,
+            geom_col="geometry",
+            params=params,
+            crs="EPSG:4326"
+        )
+    except Exception as e:
+        logger.error(f"read_postgis 失敗: {e}")
+        return gpd.GeoDataFrame()
+    finally:
+        engine.dispose()
+
+    if gdf.empty:
+        logger.warning(f"GIS_001 查無資料（area_level={area_level}）")
+        return gdf
+
+    logger.info(f"已成功載入 {len(gdf)} 筆行政區資料（全部為 MultiPolygon）")
+    return gdf
+
+def get_gis_metadata(conn, para, shp_version: str, area_level: str = None, area_id: str = None, classification: str = None) -> pd.DataFrame:
+    """
+    para: 未來擴充用參數
     """
     pass
- 
- 
-def upsert_gis_polygon(conn, gdf: "gpd.GeoDataFrame", shp_version: str) -> bool:
+
+def check_shp_needs_update(conn, shp_version: str) -> bool:
     """
-    將 shp_reader() 讀取的 GeoDataFrame 逐筆 upsert 至 GIS_001 資料表。
- 
-    入庫流程：
-      1. 確認 GIS_001 存在（呼叫 create_gis_001_table()）
-      2. 逐筆取出 gdf 的每一行（鄉鎮），組裝 record dict
-      3. geometry 以 geopandas .to_wkt() 轉為 WKT 字串後存入
-         （PostGIS 接受 ST_GeomFromText(wkt, 4326) 格式）
-      4. 補入 shp_version 欄位
-      5. 呼叫 database_manager.execute_upsert()，conflict 欄位為 TOWNID
-      6. 全部完成後 logger.success()
- 
-    Args:
-        conn: 使用中的 psycopg2 connection 物件。
-        gdf (geopandas.GeoDataFrame): shp_reader() 回傳的 GeoDataFrame，
-            已依 TOWNID 自然排序，CRS 為 EPSG:4326。
-        shp_version (str): 來源 SHP 檔名（不含副檔名），例如 "TOWN_MOI_1140318"，
-            作為可追溯的界線版本記錄於每筆資料。
- 
-    Returns:
-        bool: 全部筆數 upsert 成功回傳 True；任一筆失敗回傳 False。
- 
-    Notes:
-        - geometry 的 WKT 轉換：gdf.geometry[i].wkt 即可取得，
-          寫入時以 ST_GeomFromText(%s, 4326) 包裝確保 CRS 正確設定
-        - upsert conflict 欄位為 TOWNID；若同一 TOWNID 已存在，
-          更新 geometry、shp_version、TOWNNAME、COUNTYNAME 等所有非 PK 欄位，
-          意即新版界線會覆蓋舊版（舊版可由 GIS_metadata 的 shp_version 欄位追溯）
-        - 建議在迴圈中以 logger.info() 記錄進度：
-          f"GIS_001 寫入進度：{i+1}/{total} — {townname}"
- 
-    TODO（Phase 2）：
-        - [ ] 實作本函式（參考上方流程）
-        - [ ] 確認 geometry WKT 寫入方式：
-              選項 A：欄位型別為 geometry，值以 ST_GeomFromText(%s, 4326) 包裝
-              選項 B：欄位型別改為 TEXT 存 WKT，讀出時由 shapely.wkt.loads() 還原
-              （選項 B 不需 PostGIS，但失去空間索引能力；依 Phase 2 實測決定）
-        - [ ] 決定是否在入庫前呼叫 ensure_columns_exist()，
-              處理新版 SHP 新增欄位的情況
-        - [ ] 考慮加入整批失敗時的 conn.rollback()，避免部分寫入的髒資料
+    判斷 shp_version 是否需要執行入庫。
+    基於「失敗即回滾」策略，只需確認是否有任何一筆紀錄存在。
     """
-    pass
+    # 這裡直接執行 EXISTS 檢查，這是最快路徑
+    # 只要 shp_version 索引存在，這幾乎不消耗時間
+    sql = 'SELECT 1 FROM "GIS_001" WHERE shp_version = %s LIMIT 1;'
+    
+    try:
+        # fetch_one=True 會回傳第一筆資料，若無資料則回傳 None
+        result = execute_sql(conn, sql, (shp_version,), fetch_one=True)
+        
+        if result:
+            logger.notice(f"✅ 版本 {shp_version} 已完整入庫，跳過。")
+            return False  # 已存在，不需要更新
+        
+        logger.notice(f"🚀 版本 {shp_version} 尚未入庫，準備開始作業...")
+        return True       # 需要更新
+        
+    except Exception as e:
+        logger.error(f"檢查版本時出錯: {e}")
+        # 出錯時保險起見回傳 False，避免在連線異常時意外啟動入庫程序
+        return False
+
+def upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool:
+    """
+    將 shp_reader() 讀取的 GeoDataFrame 批次 upsert 至 GIS_001 資料表。
+    """
+    total = len(gdf)
+
+    # 1. 判定層級與衝突欄位
+    # 修正：同時考慮 TOWNID 是否在 columns 中以及其內容是否為空
+    is_county_level = 'TOWNID' not in gdf.columns
+    area_level = "county" if is_county_level else "town"
+    
+    # 複合衝突鍵：確保同一個區域在同一個版本中不會重複
+    conflict_target = '"area_id", "shp_version"'
+    logger.notice(f"處理【{area_level}】層級資料，衝突鍵：{conflict_target}，版本：{shp_version}")
+
+    # 2. 確保欄位（排除幾何，並包含我們手動補入的 area_id 等）
+    # 這裡 ensure_columns_exist 會自動 ALTER TABLE 補齊原本 gdf 沒有但 SQL 需要的欄位
+    columns_to_ensure = [col for col in gdf.columns if col.lower() != 'geometry']
+    for extra_col in ['area_id', 'area_level', 'shp_version']:
+        if extra_col not in columns_to_ensure:
+            columns_to_ensure.append(extra_col)
+            
+    if not ensure_columns_exist(conn, "GIS_001", columns_to_ensure):
+        return False
+
+    # 3. 幾何合法性修正 (Topological cleaning)
+    logger.info(f"執行幾何合法性檢查：make_valid + buffer(0)...")
+    gdf['geometry'] = gdf['geometry'].make_valid().buffer(0)
+
+    # 4. 【關鍵】參數與 SQL 組裝
+    # 基礎欄位：排除幾何、版本以及我們會手動處理的 area_ 欄位
+    base_cols = [c for c in gdf.columns if c.lower() not in ['geometry', 'shp_version', 'area_id', 'area_level']]
+    
+    # 組裝 SQL 欄位順序：area_id, area_level, [gdf 欄位], geometry, shp_version
+    all_cols_sql = ['"area_id"', '"area_level"'] + \
+                   [f'"{c}"' for c in base_cols] + \
+                   ['"geometry"', '"shp_version"']
+    
+    placeholders = "%s, %s, " + \
+                   ", ".join(["%s"] * len(base_cols)) + \
+                   ", ST_GeomFromText(%s, 4326), %s"
+    
+    upsert_sql = f"""
+        INSERT INTO "GIS_001" ({", ".join(all_cols_sql)}) 
+        VALUES ({placeholders})
+        ON CONFLICT ({conflict_target}) 
+        DO NOTHING; 
+    """
+
+    # 5. 批次執行
+    logger.notice(f"開始批次寫入行政區界到GIS_001，共 {total} 筆（多版本模式）")
+    data_records = gdf.to_dict('records')
+    
+    try:
+        for record in tqdm(data_records, desc=f"寫入行政區界", unit="row"):
+            # 產生 area_id
+            area_id = record.get('COUNTYID') if is_county_level else record.get('TOWNID')
+            ver_town = "TOWN_MOI"
+            if area_id == "T28" and ver_town.lower() in shp_version.lower():
+                total -= 1
+                town_name = record.get("TOWNNAME")
+                logger.info(f"從鄉鎮列表中移除 {town_name}，由Town_Majia_Sanhe補入。")
+                continue
+            
+            # === 資料完整性強制檢查 ===
+            if not area_id or str(area_id).strip() == "":
+                conn.rollback()
+                logger.critical(f"【嚴重錯誤】發現缺少 area_id 的資料列！ "
+                                f"layer={area_level}, shp_version={shp_version}")
+                logger.error(f"問題資料內容: {record}")
+                return False
+            
+            # 組裝參數
+            params = [
+                area_id,                    # area_id
+                area_level,                 # area_level
+            ]
+            params.extend([record.get(c) for c in base_cols])   # 其他屬性欄位
+            params.append(record['geometry'].wkt)               # geometry
+            params.append(shp_version)                          # shp_version
+            
+            # 執行寫入
+            success = execute_sql(conn, upsert_sql, tuple(params), auto_commit=False)
+            
+            if not success:
+                conn.rollback()
+                error_id = area_id
+                logger.error(f"寫入失敗，area_id: {error_id}，已全域回滾")
+                return False
+
+        # 全部成功才 commit
+        conn.commit()
+        logger.success(f"行政區界入庫完成！版本 {shp_version}，共 {total} 筆")
+        return True
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"upsert_gis_polygon 發生未預期錯誤: {e}，已回滾")
+        return False
 
 if __name__ == '__main__':
     # 手動維護工具的使用範例：為新圖層建立色彩對應表
@@ -395,3 +610,31 @@ if __name__ == '__main__':
             logger.error(f"找不到檔案: {png_path}")
     except Exception as e:
         logger.error(e)
+
+    # 參考
+    # 一次撈取該版本的所有 Metadata
+    sql = """
+        SELECT area_id, classification, stage, file_path 
+        FROM "GIS_metadata" 
+        WHERE shp_version = %s
+    """
+    raw_data = execute_sql(conn, sql, (current_version,), fetch_all=True)
+
+    # 建立分類「抽屜」：複合鍵映射表
+    # Key: (行政區, 類別, 狀態) -> Value: 路徑
+    metadata_lookup = {
+        (r['area_id'], r['classification'], r['stage']): r['file_path'] 
+        for r in raw_data
+    }
+
+    # 使用方式：
+    # path = metadata_lookup.get(('A01', 'land_use', 'masked'))
+
+    import os
+
+    def get_disk_files(root_dir):
+        # 建立 Set 加快 in 比對速度 (O(1))
+        # 存儲檔名或相對路徑
+        return {f.name for f in os.scandir(root_dir) if f.is_file()}
+
+    # disk_set = get_disk_files("./data/v2026/land_use")

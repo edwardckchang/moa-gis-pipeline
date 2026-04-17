@@ -10,7 +10,7 @@
 ## Phase 1：專案基礎建設
 
 ### Issue 1：專案初始化與骨架建立
-**狀態：** ✅ 進行中
+**狀態：** ✅ 已完成
 
 #### 開發環境
 - [X] 在新專案根目錄執行 `git init`
@@ -93,7 +93,7 @@
 ---
 
 ### Issue 2：函式預填入骨架模組
-**狀態：** ✅ 待開始
+**狀態：** ✅ 已完成
 **前置條件：** Issue 1 完成
 
 #### `gis_reader.py` 填入
@@ -145,7 +145,7 @@
 ---
 
 ### Issue 3：版本控制與資料備份策略建立
-**狀態：** ⬜ 待開始
+**狀態：** ✅ 已完成
 **前置條件：** Issue 1 完成
 
 #### Git 使用規範建立
@@ -195,11 +195,142 @@
 ## Phase 2：地理界線解析與入庫
 
 ### Issue 4：SHP 讀取與地理資料入庫
-**狀態：** ⬜ 待開始
+**狀態：** 🔄 進行中
 **前置條件：** Phase 1 全部完成
 
-> Checklist 於 Phase 2 開始時補充
-- [ ] 建立 `requirements.txt`
+---
+
+## Phase 2：地理界線解析與入庫
+
+### Issue 4：SHP 讀取與地理資料入庫
+**狀態：** 🔄 進行中
+**前置條件：** Phase 1 全部完成
+
+---
+
+#### `gis_db.py` — 資料表建立
+
+- [X] 定義資料表名稱常數：
+  ```python
+  TABLE_GIS_001 = "GIS_001"
+  TABLE_GIS_METADATA = "GIS_metadata"
+  ```
+- [X] 實作 `create_gis_table(conn) -> bool`：
+  - [X] 確認 PostGIS extension 已安裝：`SELECT 1 FROM pg_extension WHERE extname = 'postgis';`
+  - [X] 若未安裝則 `logger.error` 並回傳 `False`
+  - [X] 若兩張表皆已存在，直接回傳 `True`
+  - [X] 建立 `GIS_001` 資料表，同時儲存縣市界（COUNTY）與鄉鎮市區界（TOWN），schema：
+    - `area_id TEXT PRIMARY KEY`（唯一識別碼，COUNTY 層級填 `COUNTYID`，TOWN 層級填 `TOWNID`）
+    - `area_level TEXT`（`"county"` 或 `"town"`）
+    - `"COUNTYID" TEXT`
+    - `"COUNTYCODE" TEXT`
+    - `"COUNTYNAME" TEXT`
+    - `"COUNTYENG" TEXT`
+    - `"TOWNID" TEXT`（COUNTY 層級填 `NULL`）
+    - `"TOWNCODE" TEXT`（COUNTY 層級填 `NULL`）
+    - `"TOWNNAME" TEXT`（COUNTY 層級填 `NULL`）
+    - `"TOWNENG" TEXT`（COUNTY 層級填 `NULL`）
+    - `geometry geometry(Geometry, 4326)`
+    - `shp_version TEXT`
+    - `created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()`
+  - [X] 建立 `GIS_metadata` 資料表，schema：
+    - `id SERIAL PRIMARY KEY`
+    - `area_id TEXT`（對應 `GIS_001.area_id`，COUNTY 層級為 `COUNTYID`，TOWN 層級為 `TOWNID`）
+    - `area_level TEXT`（`"county"` 或 `"town"`）
+    - `classification TEXT`（圖層英文名稱）
+    - `shp_version TEXT`
+    - `stage TEXT`（`"raw"` 或 `"masked"`）
+    - `file_path TEXT`
+    - `recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()`
+    - UNIQUE constraint on `(area_id, classification, shp_version, stage)`
+  - [X] 呼叫 `execute_sql()` 執行兩段 CREATE TABLE SQL
+  - [X] 再次以 `table_exists()` 確認兩張表建立成功後回傳 `True`
+- [X] 實作 `check_shp_needs_update(conn, shp_version: str) -> bool`：精簡化
+  - [X] 查詢 `GIS_001` 確認此 `shp_version` 是否已入庫
+    - 不查詢完整性與比對筆數，應該入庫前確認完整性（一次性完整寫入）
+
+---
+
+#### `gis_db.py` — 資料讀寫函式
+
+- [X] 實作 `load_all_polygon_coords(conn, area_level: str = None) -> list[dict]`（取代原 `get_all_towns`）：
+  - [X] `area_level` 可傳 `"county"`、`"town"` 或 `None`（不過濾，取全部）
+  - [X] 以 `geopandas.read_postgis()` 從 `GIS_001` 讀出`geometry` 欄位，全部升級為 MULTIPOLYGO
+  - [X] 回傳資料表 GeoDataFrame，若表不存在或查詢失敗，回傳空 GeoDataFrame 並 `logger.warning`
+
+- [ ] 實作 `get_gis_metadata(conn, area_level: str = None) -> pd.Dataframe`：
+  - [ ] `area_level` 可傳 `"county"`、`"town"` 或 `None`
+  - [ ] 從 `GIS_metadata` 查詢對應紀錄，以 `execute_sql(..., fetch_all=True)` 取出
+  - [ ] 若表不存在，回傳空 pd.Dataframe 並 `logger.warning`
+
+- [ ] 實作 `log_gis_metadata(conn, record: dict) -> bool`（供 Phase 3 使用，Phase 2 先建骨架）：
+  - [ ] record 須含 `area_id`、`area_level`、`classification`、`shp_version`、`stage`
+  - [ ] 以 `execute_upsert()` 寫入 `GIS_metadata`，conflict 欄位為 `(area_id, classification, shp_version, stage)`
+  - [ ] 衝突時更新 `file_path`、`layer_updated`
+  - [ ] 回傳 `True` / `False`
+
+- [ ] 實作 `upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool`（取代原 `upsert_gis_polygon`）：
+  - [ ] `area_level` 為 `"county"` 或 `"town"`，決定 `area_id` ：
+    - `"county"`：`area_id = COUNTYID`
+    - `"town"`：`area_id = TOWNID`
+  - [X] 先呼叫 `create_gis_table(conn)` 確保資料表存在，改為main初始化時呼叫
+  - [ ] 呼叫 `ensure_columns_exist()` 處理新版 SHP 可能新增的欄位
+  - [ ] 逐筆組裝 record dict，補入 `area_id`、`area_level`、`shp_version`
+  - [ ] 以 `execute_upsert()` 逐筆寫入，conflict 欄位為 `area_id`
+  - [ ] 衝突時更新 `geometry`、`shp_version`、`COUNTYNAME`、`TOWNNAME` 等非 PK 欄位
+  - [ ] 迴圈中以 `logger.info(f"GIS_001 寫入進度：{i+1}/{total} — {area_name}")` 記錄進度
+  - [ ] 全部完成後 `logger.success(f"SHP 入庫完成，共寫入 {total} 筆（{area_level}）至 GIS_001")`
+  - [ ] 任一筆失敗時 `conn.rollback()` 並回傳 `False`
+
+---
+
+#### `gis_reader.py` — 補強
+
+- [ ] `shp_reader()` 加入 CRS 驗證：若 `gdf.crs != EPSG:4326` 則執行 `gdf.to_crs("EPSG:4326")`
+- [ ] `shp_reader()` 加入必要欄位存在性檢查（`TOWNID` 或 `COUNTYID`、`geometry`），缺欄位時 `logger.error` 並拋出例外
+
+---
+
+#### `main_gis.py` — 選單與流程串接
+
+- [X] 實作 `check_shp_needs_update(conn, shp_version: str, area_level: str) -> bool`：
+    - 移動到 `gis_db.py` 且精簡化，查詢語句要寫在 `gis_db.py`
+
+- [X] 實作 `run_shp_pipeline(conn, shp_dir: str) -> None` 完整流程：
+  - [X] 呼叫 `gis_db.create_gis_table(conn)` 初始化兩張資料表，改為程式初始化時呼叫
+  - [X] 掃描 `shp_dir` 下所有 `.shp` 檔案，識別三個核心檔案並判斷 `area_level`：
+    - `COUNTY_MOI_{民國年月日}.shp` → `area_level = "county"`
+    - `TOWN_MOI_{民國年月日}.shp` → `area_level = "town"`
+    - `Town_Majia_Sanhe_{民國年月日}.shp` → `area_level = "town"`
+  - [X] 每個 SHP 各自呼叫 `_check_shp_needs_update(conn, shp_version, area_level)`，已完整入庫則跳過並 `logger.info`
+  - [X] 呼叫 `gis_reader.shp_reader(shp_path)` 取得 GeoDataFrame
+  - [X] 呼叫 `gis_db.upsert_gis_boundary(conn, gdf, shp_version, area_level)` 入庫
+
+- [ ] 重構 `main()` 選單：
+  - [X] 移除「完整初始化」選項，以「更新 SHP 界線」取代（首次執行與更新邏輯相同，由 `_check_shp_needs_update` 自動判斷是否需要入庫）
+  - [X] 選項規劃：
+    - `1. 更新 SHP 界線`：呼叫 `run_shp_pipeline(conn, shp_dir)`
+    - `2. 更新 WMS 量化`（Phase 3 實作，目前印出「尚未實作」）
+    - `q. 退出`
+  - [ ] 從 `cli_utils` import `yes_no_menu`，替換直接 `input()` 判斷邏輯
+  - [ ] 移除 `__main__` 區塊中 `generate_global_data(conn)` 的舊專案殘留
+
+---
+
+#### 驗證
+
+- [ ] 單元測試 `create_gis_table(conn)`：確認 `GIS_001` 與 `GIS_metadata` 兩張表建立成功，且欄位結構符合 schema
+- [ ] 單元測試 `shp_reader()`：
+  - 讀取 `COUNTY_MOI_1140318.shp`，確認 CRS 為 `EPSG:4326`，`COUNTYID` 欄位自然排序正確
+  - 讀取 `TOWN_MOI_1140318.shp`，確認回傳 368 筆，`TOWNID` 欄位自然排序正確（`A01 < A02 < ... < W01`）
+- [ ] 單元測試 `upsert_gis_boundary()`：
+  - 分別以 `area_level="county"` 與 `area_level="town"` 寫入
+  - 以 `get_count(conn, "GIS_001")` 確認縣市筆數與鄉鎮筆數各自正確
+  - 確認 `area_id` 組裝格式（county：`"A"`；town：`"AA01"`）
+- [ ] 執行 `main_gis.py` 選單選項 1（更新 SHP 界線），確認 COUNTY 與 TOWN 三個 SHP 均可完整入庫
+- [ ] 確認重複執行（upsert）不產生重複列，筆數保持不變
+- [ ] 執行 `pip-chill > requirements.txt` 更新套件清單
+- [ ] `git commit`（message：`[Feature] Phase 2 SHP 入庫完成`）
 
 ---
 

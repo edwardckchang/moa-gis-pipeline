@@ -5,7 +5,7 @@ GIS 專屬 CLI 選單入口，管理層級一（SHP 入庫）與層級二（WMS 
 
 職責範圍：
   層級一（Phase 2）— SHP 行政界線解析與入庫：
-    - 掃描 GIS/boundaries/ 目錄下的所有 SHP 檔案
+    - 掃描 boundaries/ 目錄下的所有 SHP 檔案
     - 與 GIS_metadata 比對，判斷是否有新版本需要入庫（新檔名即新版本）
     - 呼叫 gis_reader.shp_reader() 讀取 GeoDataFrame
     - 呼叫 gis_db.save_gis_bounds_to_postgresql() 寫入 GIS_001
@@ -29,13 +29,14 @@ GIS 專屬 CLI 選單入口，管理層級一（SHP 入庫）與層級二（WMS 
   本模組持有兩個對照表，供 geographic_mapping() 查表後傳入 save_image()：
     圖檔中英對照表：WMS 圖層中文名稱 → 英文分類名稱（作為目錄名與 classification 欄位）
     行政區中英對應表：TOWNID → 英文行政區名稱（作為檔名的 region_name_en）
+        可自行政區界表中取出
   行政區英文名稱同時寫入 GIS_001.TOWNNAME_EN，對照表來源為 TOWNID 對應英文名稱的 JSON，
   格式與 geographic_color_metadata.json 相同，以 file_utils.load_json_data() 載入。
   圖檔中英對照表來源待 Phase 3 確認（hardcode dict 或 JSON）。
 
 TODO（Phase 2 — 層級一）：
-  - [ ] 實作 scan_shp_files(shp_dir) -> list[str]：
-        掃描指定目錄，回傳所有 .shp 檔案的完整路徑列表
+  - [X] 實作 scan_shp_files(shp_dir) -> list[str]：
+        只有一行，不需要建函式
   - [ ] 實作 check_shp_needs_update(conn, shp_version) -> bool：
         查詢 GIS_metadata，判斷此 shp_version 是否已完整入庫；
         若未入庫或入庫不完整則回傳 True
@@ -46,6 +47,7 @@ TODO（Phase 2 — 層級一）：
 
 TODO（Phase 3 — 層級二）：
   - [ ] 建立行政區中英對應表 JSON（key: TOWNID，value: 英文名稱）
+        自行政區界表中取出
   - [ ] 確認圖檔中英對照表來源與格式
         （含作物名稱翻譯：crop_suitability_rating_map_{作物名}、soil_survey_{類型名}）
   - [ ] 實作 load_map_links(conn_moa) -> dict：
@@ -61,8 +63,8 @@ TODO（Phase 3 — 層級二）：
   database_manager（connect_conn, disconnect_conn, execute_sql）
   gis_reader（shp_reader, get_width_height_from_geographic_mapping, png_geographic_mapping）
   gis_downloader（replace_url_parameters, fetch_wms_image, save_image）
-  gis_db（create_gis_001_table, save_gis_bounds_to_postgresql,
-          get_all_towns, log_gis_metadata, create_gis_metadata_table）
+  gis_db（create_gis_table, save_gis_bounds_to_postgresql,
+          get_all_towns, log_gis_metadata
   file_utils（load_json_data）
   cli_utils（yes_no_menu）
   logs_handle（setup_logging, logger）
@@ -73,32 +75,58 @@ from logs_handle import logger, setup_logging
 from gis_downloader import replace_url_parameters, fetch_wms_image, save_image
 from dotenv import load_dotenv, dotenv_values
 import pandas as pd
-from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping
-
-# TODO（Phase 3）：以 file_utils.load_json_data() 從 JSON 載入
-# 格式：{"TOWNID": "region_name_en", ...}，例如 {"10016010": "da_an_dist"}
-# 來源：與 GIS_001.TOWNNAME_EN 欄位同步的 JSON 檔案
-行政區中英對應表: dict = {}
+from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping, shp_reader
+import os
+from gis_db import create_gis_table, get_gis_metadata, load_all_polygon_coords, check_shp_needs_update, upsert_gis_boundary
+from gis_db import load_map_links
+from cli_utils import yes_no_menu
+from utils import init_checkpoint, Checkpoint
 
 # TODO（Phase 3）：確認來源格式後載入
 # 格式：{"農地重要性等級": "farmland_importance_level", ...}
 # 含作物名稱與土壤類型的翻譯對照
-圖檔中英對照表: dict = {}
 
 
-def geographic_mapping(conn, shp_version: str, target_res: int = 100) -> None:
+def _run_shp_pipeline(conn, shp_dir: str) -> None:
+    """
+    層級二鄉鎮市區界經緯度資料入庫
+    執行流程：
+      1. 呼叫 gis_db.create_gis_polygon_table() 與 gis_db.create_gis_metadata_table() 初始化 GIS_001 與 GIS_metadata 資料表
+        已移到程式初始化時執行
+      2. 掃描 boundaries/ 目錄下的所有 SHP 檔案，核心檔案有三個：COUNTY_MOI_{民國年月日}，Town_Majia_Sanhe，TOWN_MOI_{民國年月日}
+        其中Town_Majia_Sanhe需要解壓縮後自行加上後綴'_{民國年月日}'
+      3. 呼叫 gis_db.check_shp_needs_update，判斷是否有新版本需要入庫（新檔名即新版本）
+      4. 呼叫 gis_reader.shp_reader() 讀取 GeoDataFrame
+      5. 呼叫 gis_db.upsert_gis_boundary() 寫入 GIS_001
+    Args:
+        conn: moa_gis 資料庫的 psycopg2 connection 物件。
+    """
+    shp_file_list = [f for f in os.listdir(shp_dir) if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())]
+    for shp_file in shp_file_list:
+        shp_path = os.path.join(shp_dir, shp_file)
+        shp_version = os.path.splitext(shp_file)[0]
+        if not check_shp_needs_update(conn, shp_version):
+            continue
+        gdf = shp_reader(shp_path)
+        upsert_gis_boundary(conn, gdf, shp_version)
+
+def _geographic_mapping(conn, target_res: int = 100) -> None:
     """
     層級二核心入口：依序執行 WMS 圖層下載、地理遮罩、落地存檔，並記錄執行結果至 GIS_metadata。
 
     前置條件：
       - GIS_001 已完成入庫（層級一完成）
-      - 模組層級的圖檔中英對照表、行政區中英對應表已載入
+      - 模組層級的圖檔中英對照表
 
     執行流程：
-      1. 建立 moa_opendata 第二條連線，取出 WMS 圖層 URL dict，查完即關閉
-      2. 從 GIS_001 取出所有鄉鎮 geometry，還原為 {TOWNID: Shapely Polygon} dict
+      1. 取出 WMS 圖層 URL dict
+      2. 從 GIS_001 取出所有縣市鄉鎮 geometry，還原為 {region_name_en: Shapely Polygon} dict
+        area_level = town
+            region_name_en = COUNTYENG + "_" + TOWNENG
+        area_level = county
+            region_name_en = COUNTYENG
       3. 雙層迴圈（外層：圖層，內層：鄉鎮）：
-           a. 查表取得圖層英文名稱（classification）與行政區英文名稱（region_name_en）
+           a. 既然官方表格有，在名稱在取出時就拿到了
            b. polygon.bounds 取 BBOX
            c. replace_url_parameters() 注入 BBOX / WIDTH / HEIGHT
            d. fetch_wms_image() 下載 raw 影像
@@ -132,7 +160,7 @@ def geographic_mapping(conn, shp_version: str, target_res: int = 100) -> None:
           作物名稱與土壤類型需翻譯對照，待 Phase 3 建立
 
     TODO（Phase 3）：
-        - [ ] 實作流程步驟 1：建立 moa_opendata 連線，呼叫 load_map_links()，查完關閉
+        - [ ] 實作流程步驟 1：呼叫 load_map_links(conn)
         - [ ] 實作流程步驟 2：呼叫 load_all_polygon_coords(conn)
         - [ ] 補完步驟 3f/3g 的 status 判斷邏輯
               （"unchanged" 時查詢 GIS_metadata 並以 os.path.exists() 確認磁碟檔案存在）
@@ -142,21 +170,12 @@ def geographic_mapping(conn, shp_version: str, target_res: int = 100) -> None:
         - [ ] 移除舊專案 GLOBAL_METADATA 邏輯，改為 load_map_links()
     """
     # 1. 取得 WMS 圖層 URL
-    # TODO（Phase 3）：以下改為 load_map_links(conn_moa_opendata)，查完關閉第二條連線
-    # 目前為舊專案邏輯，暫時保留作為結構參考
-    maps_tableid = [k for k, v in GLOBAL_METADATA.items() if "102" in k]
-    sql_query = "SELECT * FROM {map_tableid};"
-    maps_data = []
-    for map_tableid in maps_tableid:
-        maps_data.extend(
-            execute_sql(conn, sql_query.format(map_tableid=map_tableid), fetch_all=True)
-        )
-    map_links = {d.get("圖檔中文名稱"): d.get("資料介接") for d in maps_data}
+    map_links = load_map_links(conn)
 
-    # 2. 從 GIS_001 取得鄉鎮 geometry
-    # TODO（Phase 3）：改呼叫 load_all_polygon_coords(conn)，回傳 {TOWNID: polygon}
-    all_polygon_coords: dict = {}
-
+    # 2. 從 GIS_001 取得鄉鎮 geometry，回傳GeoDataframe
+    all_polygon = load_all_polygon_coords(conn)
+    # 組裝字典
+    
     # 3. 雙層迴圈：圖層 × 鄉鎮
     for map_name, map_link in map_links.items():
         map_name_en = 圖檔中英對照表.get(map_name)
@@ -164,11 +183,9 @@ def geographic_mapping(conn, shp_version: str, target_res: int = 100) -> None:
             logger.warning(f"圖層 '{map_name}' 無對應英文名稱，跳過。")
             continue
 
-        for townid, polygon_coords in all_polygon_coords.items():
-            region_en = 行政區中英對應表.get(townid)
-            if not region_en:
-                logger.warning(f"TOWNID '{townid}' 無對應英文名稱，跳過。")
-                continue
+        for polygon_coords in all_polygon:
+
+            region_en = polygon_coords.get("COUNTYENG") + "_" + polygon_coords.get("TOWNENG")
 
             # 3b. 計算 BBOX
             bounds = polygon_coords.bounds
@@ -217,17 +234,14 @@ def geographic_mapping(conn, shp_version: str, target_res: int = 100) -> None:
             # 兩筆：raw（ori_save_info）與 masked（mask_save_info）
 
 
-def main(conn) -> None:
+def main(conn, target_res: int = 100) -> None:
     """
     GIS 工具的 CLI 主選單，提供 SHP 入庫與 WMS 量化的互動式操作入口。
 
     選單規劃：
-      1. 完整初始化
-           掃描 GIS/boundaries/ → 比對 GIS_metadata → 入庫新版本 SHP
-           → 下載所有 WMS 圖層並遮罩 → 記錄 GIS_metadata
-      2. 僅更新 SHP 界線
+      1. 僅更新 SHP 界線
            僅執行層級一（SHP 入庫），跳過 WMS 下載
-      3. 僅更新 WMS 量化
+      2. 僅更新 WMS 量化
            跳過 SHP 入庫，直接執行層級二（WMS 下載 + 遮罩），
            shp_version 從 GIS_metadata 查詢最新已入庫版本
       q. 退出
@@ -242,13 +256,9 @@ def main(conn) -> None:
           在 Phase 2 實作時全部替換
 
     TODO（Phase 2）：
-        - [ ] 移除所有舊專案殘留函式呼叫：
-              yes_no_menu、make_AUTO_YES、disable_auto_confirm、
-              update_by_metadata、handle_data_download_by_user_setting、
-              operations_of_postgresql
         - [ ] 從 cli_utils 匯入 yes_no_menu，替換現有 input() 互動邏輯
         - [ ] 實作選單選項 1：
-              scan_shp_files() → check_shp_needs_update() → run_shp_pipeline()
+              scan_shp_files → check_shp_needs_update() → run_shp_pipeline()
               → geographic_mapping(conn, shp_version)
         - [ ] 實作選單選項 2：
               scan_shp_files() → check_shp_needs_update() → run_shp_pipeline()
@@ -264,22 +274,17 @@ def main(conn) -> None:
     # TODO（Phase 2）：以下為規劃骨架，實作時替換舊專案殘留邏輯
     while True:
         print("\n請選擇操作：")
-        print("1. 完整初始化（SHP 入庫 + WMS 量化）")
-        print("2. 僅更新 SHP 界線")
-        print("3. 僅更新 WMS 量化")
+        print("1. 更新 SHP 界線")
+        print("2. 更新 WMS 量化")
         print("q. 退出")
         choice = input("請輸入您的選擇：").strip().lower()
         if choice == 'q':
             print("感謝使用，程式即將退出。")
             break
         elif choice == '1':
-            # TODO（Phase 2）：run_shp_pipeline() + geographic_mapping()
-            print("此功能尚未實作。")
+            _run_shp_pipeline(conn, SHP_DIR)
         elif choice == '2':
-            # TODO（Phase 2）：run_shp_pipeline()
-            print("此功能尚未實作。")
-        elif choice == '3':
-            # TODO（Phase 2）：geographic_mapping(conn, shp_version)
+            _geographic_mapping(conn, target_res)
             print("此功能尚未實作。")
         else:
             print("無效的選擇，請重新輸入。")
@@ -289,21 +294,21 @@ if __name__ == "__main__":
     setup_logging(level=15)
     load_dotenv()
     config = dotenv_values()
-
+    shp_dir = os.path.normpath("boundaries")
     DB_USER     = config.get("DB_USER")
     DB_PASSWORD = config.get("DB_PASSWORD")
     DB_NAME     = config.get("DB_NAME")
-
+    TABLE_GIS_001 = "GIS_001"
+    TABLE_GIS_METADATA = "GIS_metadata"
+    SHP_DIR = "boundaries"
     conn = connect_conn(DB_USER, DB_PASSWORD, DB_NAME)
+    init_checkpoint(True, True)
     if not conn:
         logger.error("資料庫連線失敗，程式終止。")
         raise SystemExit(1)
-
-    # TODO（Phase 2）：移除 generate_global_data(conn)（舊專案邏輯）
-    # TODO（Phase 2）：改為 gis_db.create_gis_001_table(conn)
-    #                       + gis_db.create_gis_metadata_table(conn)
-
+    create_gis_table(conn)
+    target_res = 100
     try:
-        main(conn)
+        main(conn, target_res)
     finally:
         disconnect_conn(conn)

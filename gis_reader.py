@@ -34,7 +34,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 import geopandas as gpd
 import os
-
+from utils import Checkpoint
 
 def _natural_sort_key(s):
     """
@@ -232,10 +232,19 @@ def shp_reader(shp_path: str) -> gpd.GeoDataFrame:
               需確認後以參數化方式支援（sort_column: str = "TOWNID"）
         - [ ] 考慮加入必要欄位存在性檢查（TOWNID、TOWNNAME、geometry）
     """
-    shp_path_nor = os.path.normpath(shp_path)
+    shp_path_nor = os.path.normpath(shp_path)# --- 自動判定排序欄位 ---
+    # 使用 lower() 判斷路徑中是否包含 'county'
+    if 'county' in shp_path_nor.lower():
+        sort_col = "COUNTYID"
+    else:
+        sort_col = "TOWNID"
     gdf = gpd.read_file(shp_path_nor)
 
-    gdf['sort_key'] = gdf['TOWNID'].apply(_natural_sort_key)
+    if sort_col not in gdf.columns:
+        logger.warning(f"預期的排序欄位 {sort_col} 不存在於 {shp_path_nor}，將跳過排序。")
+        return gdf
+
+    gdf['sort_key'] = gdf[sort_col].apply(_natural_sort_key)
     gdf_sorted = gdf.sort_values(by='sort_key', ascending=True).reset_index(drop=True)
     gdf_sorted.drop(columns=['sort_key'], inplace=True)
 

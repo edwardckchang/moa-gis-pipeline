@@ -1,6 +1,7 @@
 import psycopg2
 from logs_handle import logger
 from typing import List, Dict, Optional, Any
+from utils import Checkpoint
 
 def connect_conn(username, password, dbname, host="localhost", port=5432):
     try:
@@ -33,19 +34,20 @@ def _ensure_connection(conn: Optional[psycopg2.extensions.connection]) -> bool:
         return False
     return True
 
-def execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False):
+def execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = False, fetch_all: bool = False, auto_commit: bool = True):
     """
-    執行 SQL 查詢，並可選擇返回單條或所有結果。
-    自動處理游標關閉和事務提交/回滾。
+    執行 SQL 查詢。
+    
+    Args:
+        auto_commit: 若為 True，函式執行完畢會自動 commit/rollback。
+                     若為 False，由外部呼叫者決定 commit 時機。
     """
     if not _ensure_connection(conn):
         return None
-
     cur = conn.cursor()
     try:
         logger.debug(f"執行 SQL: {sql_query}\nParams: {params}")
-        cur.execute(sql_query, params)
-        
+        cur.execute(sql_query, params)        
         result = None
         if fetch_one:
             result = cur.fetchone()
@@ -53,19 +55,17 @@ def execute_sql(conn, sql_query: str, params: tuple = None, fetch_one: bool = Fa
             columns = [desc[0] for desc in cur.description]
             result = [dict(zip(columns, row)) for row in cur.fetchall()]
         else:
-            # 對於非查詢操作（如不帶 RETURNING 的 INSERT/UPDATE/DELETE），返回 True 表示成功
-            result = True 
-        
-        # 關鍵修改：在執行成功後提交事務
-        # 這會確保所有 DML 操作（包括帶 RETURNING 的）都能持久化
-        conn.commit() 
-        
+            result = True         
+        # 只有在 auto_commit 開啟時才在內部處理事務
+        if auto_commit:
+            conn.commit()         
         return result
-
     except Exception as e:
-        conn.rollback() # 發生錯誤時回滾事務
+        # 只有在 auto_commit 開啟時才自動回滾
+        if auto_commit:
+            conn.rollback()
         logger.error(f"執行 SQL 失敗: {type(e).__name__}: {e}\nSQL: {sql_query}\nParams: {params}")
-        return False # 查詢或操作失敗
+        return False 
     finally:
         cur.close()
 
@@ -79,13 +79,13 @@ def generate_global_data():
         return {}
     logger.notice("INFO: 正在從資料庫生成 metadata...")
     sql_query = "SELECT * FROM metadata_index;"
-    all_metadata_records = execute_sql(sql_query, fetch_all=True)
+    all_metadata_records = execute_sql(conn, sql_query, fetch_all=True)
     if all_metadata_records:
         for record in all_metadata_records:
             table_name = record.get('category_table_id')
             if table_name and table_exists(table_name):
                 count_sql = f"SELECT COUNT(*) as total_count FROM \"{table_name}\";"
-                count_res = execute_sql(count_sql, fetch_one=True)
+                count_res = execute_sql(conn, count_sql, fetch_one=True)
                 record['資料筆數'] = count_res[0] if count_res else 0
             else:
                 record['資料筆數'] = 0
@@ -149,7 +149,7 @@ def ensure_columns_exist(conn, table_name: str, columns: list[str]) -> bool:
     """
     if not _ensure_connection(conn):
         return False
-    existing_result = execute_sql(
+    existing_result = execute_sql(conn, 
         "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s;",
         (table_name,), fetch_all=True
     )
@@ -160,7 +160,7 @@ def ensure_columns_exist(conn, table_name: str, columns: list[str]) -> bool:
     for col in columns:
         if col not in existing_cols:
             alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" TEXT;'
-            if execute_sql(alter_sql):
+            if execute_sql(conn, alter_sql):
                 logger.warning(f"表格 '{table_name}' 新增欄位: {col}")
             else:
                 logger.error(f"表格 '{table_name}' 新增欄位 '{col}' 失敗。")
@@ -198,6 +198,7 @@ def execute_upsert(
     table_name: str,
     record: Dict[str, Any],
     conflict_columns: List[str],
+    auto_commit: bool = True
 ) -> bool:
     """
     對單一筆記錄執行 INSERT … ON CONFLICT DO UPDATE（upsert）。
@@ -242,7 +243,7 @@ def execute_upsert(
     )
     values = tuple(record[c] for c in cols)
 
-    result = execute_sql(conn, sql, values)
+    result = execute_sql(conn, sql, values, auto_commit=auto_commit)
     if result is False:
         logger.error(
             f"execute_upsert 失敗：table={table_name}, "
