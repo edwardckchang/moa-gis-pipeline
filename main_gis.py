@@ -78,7 +78,7 @@ from gis_downloader import replace_url_parameters, fetch_wms_image, save_image
 from dotenv import load_dotenv, dotenv_values
 import pandas as pd
 from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping, shp_reader
-import re
+import re, time
 from gis_db import create_gis_table, load_all_polygon_coords, check_shp_needs_update, upsert_gis_boundary
 from gis_db import load_map_links, log_gis_metadata, check_gis_exists
 from cli_utils import yes_no_menu
@@ -365,6 +365,10 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
             _log_result_message(result, area_id, map_name_en, shp_version, mask_save_info, stage="masked")
             _save_checkpoint(shp_ver, map_name_en, area_id)
         logger.success(f"圖層 '{map_name_en}' 全部行政區處理完畢。")
+        for n in range(5, 0, -1):
+            print(f"--- {n} 秒後繼續 ---", end="\r")
+            time.sleep(1)
+        print(" " * 20, end="\r") 
     _clear_checkpoint(shp_ver)
 
 def main(conn, target_res: int = 100) -> None:

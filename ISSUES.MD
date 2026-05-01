@@ -153,12 +153,12 @@
 - [X] 在 GitHub 建立 public repository
 - [X] 推送 Issue 1、Issue 2 的成果作為初始 commit
 - [X] 建立 commit message 規範：
-  - `[Setup]` 環境與骨架
-  - `[Refactor]` 重構與遷移
-  - `[Feature]` 新功能
-  - `[Fix]` 錯誤修正
-  - `[Data]` 資料相關變動
-  - `[Docs]` 文件、備忘錄、分析筆記
+  - `[SETUP]` 環境與骨架
+  - `[REFACTOR]` 重構與遷移
+  - `[FEATURE]` 新功能
+  - `[FIX]` 錯誤修正
+  - `[DATA]` 資料相關變動
+  - `[DOCS]` 文件、備忘錄、分析筆記
 
 #### 資料庫備份策略
 - [X] 確認 `pg_dump` 可正常執行
