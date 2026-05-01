@@ -195,25 +195,15 @@
 ## Phase 2：地理界線解析與入庫
 
 ### Issue 4：SHP 讀取與地理資料入庫
-**狀態：** 🔄 進行中
+**狀態：** ✅ 已完成
 **前置條件：** Phase 1 全部完成
-
----
-
-## Phase 2：地理界線解析與入庫
-
-### Issue 4：SHP 讀取與地理資料入庫
-**狀態：** 🔄 進行中
-**前置條件：** Phase 1 全部完成
-
----
 
 #### `gis_db.py` — 資料表建立
 
 - [X] 定義資料表名稱常數：
   ```python
-  TABLE_GIS_001 = "GIS_001"
-  TABLE_GIS_METADATA = "GIS_metadata"
+  TABLE_GIS_001 = "GIS_001"，直接填入字串於程式中
+  TABLE_GIS_METADATA = "GIS_metadata"，直接填入字串於程式中
   ```
 - [X] 實作 `create_gis_table(conn) -> bool`：
   - [X] 確認 PostGIS extension 已安裝：`SELECT 1 FROM pg_extension WHERE extname = 'postgis';`
@@ -257,44 +247,34 @@
   - [X] `area_level` 可傳 `"county"`、`"town"` 或 `None`（不過濾，取全部）
   - [X] 以 `geopandas.read_postgis()` 從 `GIS_001` 讀出`geometry` 欄位，全部升級為 MULTIPOLYGO
   - [X] 回傳資料表 GeoDataFrame，若表不存在或查詢失敗，回傳空 GeoDataFrame 並 `logger.warning`
-
-- [ ] 實作 `get_gis_metadata(conn, area_level: str = None) -> pd.Dataframe`：
-  - [ ] `area_level` 可傳 `"county"`、`"town"` 或 `None`
-  - [ ] 從 `GIS_metadata` 查詢對應紀錄，以 `execute_sql(..., fetch_all=True)` 取出
-  - [ ] 若表不存在，回傳空 pd.Dataframe 並 `logger.warning`
-
-- [ ] 實作 `log_gis_metadata(conn, record: dict) -> bool`（供 Phase 3 使用，Phase 2 先建骨架）：
-  - [ ] record 須含 `area_id`、`area_level`、`classification`、`shp_version`、`stage`
-  - [ ] 以 `execute_upsert()` 寫入 `GIS_metadata`，conflict 欄位為 `(area_id, classification, shp_version, stage)`
-  - [ ] 衝突時更新 `file_path`、`layer_updated`
-  - [ ] 回傳 `True` / `False`
-
-- [ ] 實作 `upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool`（取代原 `upsert_gis_polygon`）：
-  - [ ] `area_level` 為 `"county"` 或 `"town"`，決定 `area_id` ：
+- [X] 實作 `upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool`（取代原 `upsert_gis_polygon`）：
+  - [X] `area_level` 為 `"county"` 或 `"town"`，決定 `area_id` ：
     - `"county"`：`area_id = COUNTYID`
     - `"town"`：`area_id = TOWNID`
   - [X] 先呼叫 `create_gis_table(conn)` 確保資料表存在，改為main初始化時呼叫
-  - [ ] 呼叫 `ensure_columns_exist()` 處理新版 SHP 可能新增的欄位
-  - [ ] 逐筆組裝 record dict，補入 `area_id`、`area_level`、`shp_version`
-  - [ ] 以 `execute_upsert()` 逐筆寫入，conflict 欄位為 `area_id`
-  - [ ] 衝突時更新 `geometry`、`shp_version`、`COUNTYNAME`、`TOWNNAME` 等非 PK 欄位
-  - [ ] 迴圈中以 `logger.info(f"GIS_001 寫入進度：{i+1}/{total} — {area_name}")` 記錄進度
-  - [ ] 全部完成後 `logger.success(f"SHP 入庫完成，共寫入 {total} 筆（{area_level}）至 GIS_001")`
-  - [ ] 任一筆失敗時 `conn.rollback()` 並回傳 `False`
+  - [X] 呼叫 `ensure_columns_exist()` 處理新版 SHP 可能新增的欄位
+  - [X] 逐筆組裝 record dict，補入 `area_id`、`area_level`、`shp_version`
+  - [X] 以 `execute_sql(auto_commit=False)` 批次寫入，任一筆失敗時 `conn.rollback()` 並回傳 `False`
+  - [X] 衝突時跳過（確保版本純潔性）
+  - [X] 迴圈中以 `tqdm` 顯示進度
+  - [X] 全部完成後 `logger.success(f"行政區界入庫完成！版本 {shp_version}，共 {total} 筆資料。")`
+  - [X] 實作特殊行政區過濾邏輯（ T28 瑪家鄉已有獨立檔案的資料補入與去重邏輯）
+  - [X] 實作 `check_shp_needs_update(conn, shp_version: str) -> bool`：
+    - 精簡化，僅以 `shp_version` 欄位判斷是否入庫
 
 ---
 
 #### `gis_reader.py` — 補強
 
-- [ ] `shp_reader()` 加入 CRS 驗證：若 `gdf.crs != EPSG:4326` 則執行 `gdf.to_crs("EPSG:4326")`
-- [ ] `shp_reader()` 加入必要欄位存在性檢查（`TOWNID` 或 `COUNTYID`、`geometry`），缺欄位時 `logger.error` 並拋出例外
+- [X] `shp_reader()` 加入 CRS 驗證：若 `gdf.crs != EPSG:4326` 則執行 `gdf.to_crs("EPSG:4326")`
+  - 保留預案，不寫此語句
+- [X] `shp_reader()` 加入必要欄位存在性檢查（`TOWNID` 或 `COUNTYID`、`geometry`），缺欄位時 `logger.warning`
+  - 缺少 `geometry` 時返回空 GeoDataFrame
+  - 缺少 `TOWNID` 或 `COUNTYID` 時返回原始 GeoDataFrame
 
 ---
 
 #### `main_gis.py` — 選單與流程串接
-
-- [X] 實作 `check_shp_needs_update(conn, shp_version: str, area_level: str) -> bool`：
-    - 移動到 `gis_db.py` 且精簡化，查詢語句要寫在 `gis_db.py`
 
 - [X] 實作 `run_shp_pipeline(conn, shp_dir: str) -> None` 完整流程：
   - [X] 呼叫 `gis_db.create_gis_table(conn)` 初始化兩張資料表，改為程式初始化時呼叫
@@ -305,42 +285,86 @@
   - [X] 每個 SHP 各自呼叫 `_check_shp_needs_update(conn, shp_version, area_level)`，已完整入庫則跳過並 `logger.info`
   - [X] 呼叫 `gis_reader.shp_reader(shp_path)` 取得 GeoDataFrame
   - [X] 呼叫 `gis_db.upsert_gis_boundary(conn, gdf, shp_version, area_level)` 入庫
-
-- [ ] 重構 `main()` 選單：
+- [X] 重構 `main()` 選單：
   - [X] 移除「完整初始化」選項，以「更新 SHP 界線」取代（首次執行與更新邏輯相同，由 `_check_shp_needs_update` 自動判斷是否需要入庫）
   - [X] 選項規劃：
     - `1. 更新 SHP 界線`：呼叫 `run_shp_pipeline(conn, shp_dir)`
     - `2. 更新 WMS 量化`（Phase 3 實作，目前印出「尚未實作」）
     - `q. 退出`
-  - [ ] 從 `cli_utils` import `yes_no_menu`，替換直接 `input()` 判斷邏輯
-  - [ ] 移除 `__main__` 區塊中 `generate_global_data(conn)` 的舊專案殘留
+  - [X] 從 `cli_utils` import `yes_no_menu`，替換直接 `input()` 判斷邏輯
 
 ---
 
 #### 驗證
 
-- [ ] 單元測試 `create_gis_table(conn)`：確認 `GIS_001` 與 `GIS_metadata` 兩張表建立成功，且欄位結構符合 schema
-- [ ] 單元測試 `shp_reader()`：
+- [X] 單元測試 `create_gis_table(conn)`：確認 `GIS_001` 與 `GIS_metadata` 兩張表建立成功，且欄位結構符合 schema
+- [X] 單元測試 `shp_reader()`：
   - 讀取 `COUNTY_MOI_1140318.shp`，確認 CRS 為 `EPSG:4326`，`COUNTYID` 欄位自然排序正確
   - 讀取 `TOWN_MOI_1140318.shp`，確認回傳 368 筆，`TOWNID` 欄位自然排序正確（`A01 < A02 < ... < W01`）
-- [ ] 單元測試 `upsert_gis_boundary()`：
+- [X] 單元測試 `upsert_gis_boundary()`：
   - 分別以 `area_level="county"` 與 `area_level="town"` 寫入
   - 以 `get_count(conn, "GIS_001")` 確認縣市筆數與鄉鎮筆數各自正確
-  - 確認 `area_id` 組裝格式（county：`"A"`；town：`"AA01"`）
-- [ ] 執行 `main_gis.py` 選單選項 1（更新 SHP 界線），確認 COUNTY 與 TOWN 三個 SHP 均可完整入庫
-- [ ] 確認重複執行（upsert）不產生重複列，筆數保持不變
-- [ ] 執行 `pip-chill > requirements.txt` 更新套件清單
-- [ ] `git commit`（message：`[Feature] Phase 2 SHP 入庫完成`）
+  - 確認 `area_id` 正確填入，不組裝（county：`"A"`；town：`"A01"`）
+- [X] 執行 `main_gis.py` 選單選項 1（更新 SHP 界線），確認 COUNTY 與 TOWN 三個 SHP 均可完整入庫
+- [X] 確認重複執行（upsert）不產生重複列，筆數保持不變 (已在外面阻擋，不執行入庫)
+- [X] `git commit`（message：`[Feature]SHP reading and geometry(Goemetry, 4325) upsert`）
 
 ---
 
 ## Phase 3：WMS 圖層下載與像素量化
 
-### Issue 5：WMS 下載、地理遮罩與量化輸出
-**狀態：** ⬜ 待開始
+### Issue 5.1：WMS 下載、地理遮罩
+**狀態：** 🔄 進行中
 **前置條件：** Phase 2 完成
 
-> Checklist 於 Phase 3 開始時補充
+#### `gis_db.py` — 資料讀寫函式
+- [X] 實作 `log_gis_metadata(conn, area_id: str, area_level: str, classification: str, shp_version: str, save_info: dict, stage: str = "raw") -> None`：
+  - [X] 以 `execute_sql()` 寫入 `GIS_metadata`，conflict 欄位為 `(area_id, classification, shp_version, stage)`
+  - [X] 衝突時更新 `file_path`、`recorded_at`
+- [X] 實作 `load_map_links`，讀取 `metadata_index` 並從地理圖資分類（002）中獲得對應的圖層連結
+- [X] 實作 `load_all_polygon_coords`，讀取 `GIS_001` 獲得行政區界資料
+
+---
+
+#### `main_gis.py` — 選單與流程串接
+- [X] 建立圖檔中英對照表模組 `map_name_mapping.py`
+  - 四大類型：`crop_suitability_rating_map_{作物名}`，`farmland_importance_level`，`farmland_productivity_levels`，`soil_survey_{類型名}`
+  - [X] 建立圖檔命名規範函式（亦為主函式） `get_or_create_map_name_en()`
+- [X] 實作 `_geographic_mapping`，建立基本架構：
+  - [X] 呼叫 `load_map_links` 與 `load_all_polygon_coords`，獲得基本圖層連結與行政區界資料
+  - [X] 對GeoDataframe中所有 'town' 層級的 'COUNTYENG' 欄位進行補值
+  - [X] 可選 SHP 版本，按照民國年月日版本號顯示
+  - [X] 雙層迴圈圖層連結與行政區界資料
+  - [X] 不排除 raw／mask 為全白的圖層
+    - 因為存檔開銷極小，因此不再判斷無 GIS 資料的圖層
+  - [X] 記錄中斷資訊，包含版本、圖層與行政區
+  - [X] 將遮罩參數改為全黑 = 0，方便以後的面積計算
+
+---
+
+#### `gis_downloader.py` — 影像下載、比對與儲存
+- [X] 修正 `replace_url_parameters` 修改參數錯誤的bug
+- [X] 修正 `fetch_wms_image`，改為返回binary image，並加入重試邏輯
+- [X] 修正 `_compare_and_get_status`的比對方式，改為binary image比對
+- [X] 修正 `save_image`，可接受binary image或nd.array並transpose後存檔
+
+---
+
+#### `gis_quantifier.py` — 影像量化與色彩定義
+- [X] 新增函式 `is_nearly_white` 用來檢查影像是否接近全白，改為不使用
+
+---
+
+### Issue 5.1：PNG矩陣量化輸出
+**狀態：** ⬜ 待開始
+**前置條件：** Issue 5.1 完成
+
+#### `gis_db.py` — 資料讀寫函式
+- [ ] 實作 `get_gis_metadata(conn, area_level: str = None) -> pd.Dataframe`：
+  - [ ] `area_level` 可傳 `"county"`、`"town"` 或 `None`
+  - [ ] 從 `GIS_metadata` 查詢對應紀錄，以 `execute_sql(..., fetch_all=True)` 取出
+  - [ ] 若表不存在，回傳空 pd.Dataframe 並 `logger.warning`
+> Checklist 於 Issue 5.2 開始時補充
 - [ ] 建立 `requirements.txt`
 
 ---

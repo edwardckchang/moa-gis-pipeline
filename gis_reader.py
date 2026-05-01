@@ -24,17 +24,44 @@ TODO（Phase 2 — 層級一）：
   geopandas, rasterio, shapely, vincenty, pandas, numpy
   logs_handle（統一 logger）
 """
+import re, os, cv2, sys
+def _patch_proj_data() -> None:
+    """
+    覆寫 PROJ_DATA / PROJ_LIB，避免 PostGIS 安裝後污染 rasterio 的 GDAL。
+    PostGIS 安裝程式會將舊版 proj.db 路徑寫入系統環境變數，
+    必須在任何 rasterio / GDAL import 發生之前覆寫，否則 GDAL 已鎖定錯誤路徑。
+    """
+    if sys.platform != "win32":
+        return
+    import pathlib
+    candidates = [
+        pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "rasterio" / "proj_data",
+        pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "pyogrio" / "proj_data",
+    ]
+    import site
+    for sp in [site.getusersitepackages()] + site.getsitepackages():
+        candidates.append(pathlib.Path(sp) / "rasterio" / "proj_data")
+        candidates.append(pathlib.Path(sp) / "pyogrio" / "proj_data")
 
+    for proj_dir in candidates:
+        if (proj_dir / "proj.db").exists():
+            os.environ["PROJ_DATA"] = str(proj_dir)
+            os.environ["PROJ_LIB"]  = str(proj_dir)
+            print(f"[PROJ patch] 使用：{proj_dir}")
+            return
+
+    print("[PROJ patch] ⚠️ 找不到有效的 proj.db，PROJ 衝突未解決")
+_patch_proj_data()
 import pandas as pd
+import numpy as np
 from vincenty import vincenty
-from logs_handle import logger
+from logs_handle import logger, setup_logging
 from rasterio.mask import mask
-import re
 from rasterio.io import MemoryFile
 from rasterio.transform import from_bounds
 import geopandas as gpd
-import os
-from utils import Checkpoint
+from utils import checkpoint as cp
+from utils import init_checkpoint, checkpoint as cp
 
 def _natural_sort_key(s):
     """
@@ -120,7 +147,7 @@ def get_width_height_from_geographic_mapping(
 def png_geographic_mapping(
     polygon,
     bounds: tuple,
-    image_array,
+    raw_image,
     target_res: int = 100
 ) -> tuple:
     """
@@ -141,7 +168,7 @@ def png_geographic_mapping(
     Returns:
         tuple[numpy.ndarray, affine.Affine] | tuple[None, None]:
             - 成功：(out_img, out_transform)
-              out_img shape = (C, H, W)，多邊形外像素值為 255
+              out_img shape = (H, W, C)，dtype=uint8，多邊形外像素值為 255
             - 失敗（尺寸不符或遮罩運算錯誤）：(None, None)
 
     Notes:
@@ -153,8 +180,13 @@ def png_geographic_mapping(
         - 評估尺寸容差邏輯：WMS 實際回傳可能因服務端 rounding 而有 ±1px 偏差，
           目前做法是直接回傳 (None, None)，Phase 3 可改為 resize 後繼續處理
     """
-    if image_array is None:
+    if raw_image is None:
         return None, None
+    if isinstance(raw_image, bytes):
+        logger.debug("已偵測到 bytes 影像，將轉換為 array")
+        image_array = cv2.imdecode(np.frombuffer(raw_image, np.uint8), cv2.IMREAD_UNCHANGED) # 從bytes轉換為ndarray
+    else:
+        image_array = raw_image
 
     # 1. 計算預期尺寸並驗證
     W_expected, H_expected = get_width_height_from_geographic_mapping(bounds, target_res)
@@ -181,7 +213,7 @@ def png_geographic_mapping(
         with MemoryFile() as memfile:
             with memfile.open(
                 driver='GTiff',
-                count=image_array.shape[2],
+                count=image_array.shape[2] if image_array.ndim == 3 else 1,
                 height=H_actual,
                 width=W_actual,
                 dtype=image_array.dtype,
@@ -195,9 +227,9 @@ def png_geographic_mapping(
                     shapes=target_polygon_geojson,
                     crop=False,    # 保留原始尺寸
                     filled=True,
-                    nodata=255     # 多邊形外填白（與 WMS 背景一致）
+                    nodata=0     # 多邊形外填黑（與 WMS 背景一致）以後方便計算內圍面積，前提是沒有黑色資料點
                 )
-                return out_img, out_transform
+                return out_img.transpose(1, 2, 0), out_transform
 
     except Exception as e:
         logger.error(f"遮罩運算失敗: {e}")
@@ -230,18 +262,20 @@ def shp_reader(shp_path: str) -> gpd.GeoDataFrame:
         - [ ] 加入 CRS 驗證：若 gdf.crs != EPSG:4326 則執行 gdf.to_crs("EPSG:4326")
     """
     shp_path_nor = os.path.normpath(shp_path)# --- 自動判定排序欄位 ---
+    file_name = os.path.basename(shp_path_nor)
+    gdf = gpd.read_file(shp_path_nor)
     # 使用 lower() 判斷路徑中是否包含 'county'
     if "geometry" not in gdf.columns:
-        logger.warning(f"geometry 欄位不存在於 {shp_path_nor}，不是正確的 SHP檔案，將回傳空白 GeoDataFrame。")
+        logger.warning(f"geometry 欄位不存在於 {file_name}，不是正確的 SHP檔案，將回傳空白 GeoDataFrame。")
         return gpd.GeoDataFrame()
-    if "TOWNID".lower() not in gdf.columns.str.lower() or "COUNTYID".lower() not in gdf.columns.str.lower():
-        logger.warning(f"排序欄位 TOWNID 或 COUNTYID 不存在於 {shp_path_nor}，將回傳原始 GeoDataFrame。")
-        return gdf
-    if 'county' in shp_path_nor.lower():
-        sort_col = "COUNTYID"
-    else:
-        sort_col = "TOWNID"
-    gdf = gpd.read_file(shp_path_nor)
+    if "COUNTYID".lower() in gdf.columns.str.lower():
+        if "COUNTY".lower() in file_name.lower():
+            sort_col = "COUNTYID"
+        elif "TOWNID".lower() in gdf.columns.str.lower() and "TOWN".lower() in file_name.lower():
+            sort_col = "TOWNID"
+        else:
+            logger.warning(f"排序欄位 TOWNID 或 COUNTYID 不存在於 {file_name}，將回傳原始 GeoDataFrame。")
+            return gdf
 
     if sort_col not in gdf.columns:
         logger.warning(f"預期的排序欄位 {sort_col} 不存在於 {shp_path_nor}，將跳過排序。")
@@ -256,17 +290,39 @@ def shp_reader(shp_path: str) -> gpd.GeoDataFrame:
 
 
 if __name__ == '__main__':
-    shp_path = os.path.join("GIS", "TOWN_MOI_1140318.shp")
+    setup_logging(10)
+    shp_dir = "boundaries"
+    init_checkpoint(True, True)
+    shp_file_list = [f for f in os.listdir(shp_dir) if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())]
+    gdf_all = None
+    path = os.path.normpath(r"output\wms_images\COUNTY_MOI_1140318\raw\farmland_productivity_levels\Taipei City.png")
+    image = cv2.imread(path, cv2.IMREAD_COLOR)
+    cv2.imshow('Raw Image', image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    # 讀取所有 SHP，合併成一個 GeoDataFrame
+    shp_file_list = [
+        f for f in os.listdir(shp_dir)
+        if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())
+    ]
+    gdf_all = None
+    for shp_file in shp_file_list:
+        shp_path = os.path.join(shp_dir, shp_file)
+        gdf = shp_reader(shp_path)
+        gdf_all = pd.concat([gdf_all, gdf], ignore_index=True) if gdf_all is not None else gdf
 
-    try:
-        if os.path.exists(shp_path):
-            gdf = shp_reader(shp_path)
-            print(gdf.head(10))
-    except Exception as e:
-        print(e)
+    cp(gdf_all)
+    taipei_row = gdf_all.iloc[0]
+    geometry_obj = taipei_row.get('geometry')
+    bounds = geometry_obj.bounds
+    cp(bounds)
+    out_img, out_transform = png_geographic_mapping(geometry_obj, bounds, image, target_res=100)
+    if out_img is None:
+        logger.error("遮罩失敗")
+        raise SystemExit(1)
 
-    w, h = get_width_height_from_geographic_mapping(
-        bounds=(119.3, 21.9, 122.1, 25.4),
-        target_resolution_m=100
-    )
-    print(w, h)
+    logger.notice(f"out_img_display shape（表示用）：{out_img.shape}") 
+
+    cv2.imshow('Mask Image', out_img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()

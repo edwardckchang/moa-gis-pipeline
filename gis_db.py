@@ -53,8 +53,17 @@ from gis_quantifier import load_image_with_chinese_path, decode_png_color_value
 from logs_handle import logger
 from database_manager import table_exists, execute_sql, ensure_columns_exist
 from tqdm import tqdm
-from sqlalchemy import create_engine
-from utils import Checkpoint
+from sqlalchemy import create_engine, inspect
+from dotenv import load_dotenv
+from utils import checkpoint as cp
+import logging
+
+load_dotenv()
+db_user = os.getenv("DB_USER")
+db_password = os.getenv("DB_PASSWORD")
+db_host = os.getenv("DB_HOST", "localhost")
+db_port = os.getenv("DB_PORT", "5432")
+db_name = os.getenv("DB_NAME")
 
 def get_count(conn, table_id: str) -> str:
     """
@@ -133,7 +142,6 @@ def infer_schema_from_geodataframe(gdf: gpd.GeoDataFrame) -> dict:
             logger.warning(f"infer_schema_from_geodataframe：未知 dtype '{dtype_str}'（欄位：'{col}'），退回 text。")
         schema[col] = mapped
     return schema
-
 
 def add_color_mapping_level1(
     illustrative_diagram_name: str,
@@ -261,9 +269,62 @@ def add_color_mapping_level1(
     print("--- 顏色映射輸入完成，正在關閉視窗 ---")
     cv2.destroyAllWindows()
 
-# TODO（Phase 2）：實作 get_all_towns(conn) -> list[dict]
-# TODO（Phase 2）：實作 create_gis_metadata_table(conn) -> None
-# TODO（Phase 3）：實作 log_gis_metadata(conn, record: dict) -> bool
+def log_gis_metadata(
+    conn,
+    area_id: str,
+    area_level: str,
+    classification: str,
+    shp_version: str,
+    save_info: dict,
+    stage: str = "raw"
+) -> bool:
+    """
+    將單筆影像處理結果寫入 GIS_metadata。
+    save_info 為 save_image() 的回傳值，status 為 "created" 或 "updated" 時才寫入。
+    """
+    from database_manager import execute_sql
+
+    if save_info["status"] == "error" or save_info["status"] == "unchanged":
+        return None
+    file_path = save_info.get("path", "")
+    # stage 預設由呼叫端的 save_info 路徑推斷，或直接由參數指定
+    # 此處統一以參數 stage 為準
+    record = {
+        "area_id":        area_id,
+        "area_level":     area_level,
+        "classification": classification,
+        "shp_version":    shp_version,
+        "stage":          stage,
+        "file_path":      file_path,
+    }
+
+    upsert_sql = """
+        INSERT INTO "GIS_metadata"
+            (area_id, area_level, classification, shp_version, stage, file_path)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (area_id, classification, shp_version, stage)
+        DO UPDATE SET
+            file_path    = EXCLUDED.file_path,
+            recorded_at  = NOW();
+    """
+    result = execute_sql(
+        conn, upsert_sql,
+        (
+            record["area_id"], record["area_level"], record["classification"],
+            record["shp_version"], record["stage"], record["file_path"]
+        )
+    )
+    if not result:
+        logger.warning(
+            f"GIS_metadata 寫入失敗（僅記錄 log，不中止流程）："
+            f"area_id={area_id}, classification={classification}, stage={stage}。"
+        )
+        return False
+    logger.debug(
+        f"GIS_metadata 寫入成功：area_id={area_id}, "
+        f"classification={classification}, stage={stage}。"
+    )
+    return True
 
 def create_gis_table(conn) -> bool:
     """
@@ -355,7 +416,7 @@ def create_gis_table(conn) -> bool:
         return False
 
 def load_map_links(conn) -> list[dict]:
-    metadata = generate_metadata()
+    metadata = generate_metadata(conn)
 
     maps_tableid = [k for k, v in metadata.items() if "102" in k]
     maps_data = []
@@ -364,14 +425,14 @@ def load_map_links(conn) -> list[dict]:
         maps_data.extend(
             execute_sql(conn, sql_query, fetch_all=True)
         )
-    map_links = {d.get("圖檔中文名稱"): d.get("資料介接") for d in maps_data}
+    map_links = {d.get("圖檔中文名稱"): d.get("分布圖Url") for d in maps_data}
     return map_links
 
 def generate_metadata(conn):
     """
     這個函數用來生成 metadata 資料。(字典)
     """
-    if not table_exists("metadata_index"):
+    if not table_exists(conn, "metadata_index"):
         return {}
     sql_query = "SELECT * FROM metadata_index;"
     all_metadata_records = execute_sql(conn, sql_query, fetch_all=True)
@@ -405,16 +466,9 @@ def load_all_polygon_coords(conn, area_level: str = None) -> gpd.GeoDataFrame:
 
     # 1. 建立 SQLAlchemy Engine（僅此處使用，讀完立即釋放）
     try:
-        dsn = conn.dsn
-        dsn_parts = dict(item.split("=") for item in dsn.split() if "=" in item)
-        sa_url = (
-            f"postgresql+psycopg2://{dsn_parts.get('user', '')}:"
-            f"{dsn_parts.get('password', '')}@"
-            f"{dsn_parts.get('host', 'localhost')}:"
-            f"{dsn_parts.get('port', '5432')}/"
-            f"{dsn_parts.get('dbname', '')}"
-        )
-        engine = create_engine(sa_url)
+        sa_url = f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        engine = create_engine(sa_url, echo=False)
+        logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
     except Exception as e:
         logger.error(f"建立 SQLAlchemy engine 失敗: {e}")
         return gpd.GeoDataFrame()
@@ -425,17 +479,25 @@ def load_all_polygon_coords(conn, area_level: str = None) -> gpd.GeoDataFrame:
     if area_level in ("county", "town"):
         where_clause = "WHERE area_level = %s"
         params = (area_level,)
-
-    query = f"""
-        SELECT 
-            *,
-            ST_Multi(geometry) AS geometry
-        FROM "GIS_001"
-        {where_clause}
-        ORDER BY area_id;   -- 確保自然排序
-    """
-
     try:
+        # 1. 取得表格的所有欄位名稱
+        inspector = inspect(engine)
+        all_columns = [col['name'] for col in inspector.get_columns("GIS_001")]
+        
+        # 2. 過濾掉原始的 geometry 欄位
+        # 使用列表推導式，確保不區分大小寫
+        other_columns = [f'"{c}"' for c in all_columns if c.lower() != 'geometry']
+        cols_str = ", ".join(other_columns)
+
+        # 3. 組合成新的 SQL
+        query = f"""
+            SELECT 
+                {cols_str}, 
+                ST_Multi(geometry) AS geometry
+            FROM "GIS_001"
+            {where_clause}
+            ORDER BY area_id;
+        """
         gdf = gpd.read_postgis(
             sql=query,
             con=engine,
@@ -461,6 +523,31 @@ def get_gis_metadata(conn, para, shp_version: str, area_level: str = None, area_
     para: 未來擴充用參數
     """
     pass
+
+def check_gis_exists(conn, save_info: dict, area_id: str, map_name_en: str, shp_version: str, stage: str = "masked") -> bool:
+    if save_info["status"] != "unchanged":
+        return False  # 只有 unchanged 才需要檢查
+
+    check_sql = """
+        SELECT file_path FROM "GIS_metadata"
+        WHERE area_id = %s
+          AND classification = %s
+          AND shp_version = %s
+          AND stage = %s
+        LIMIT 1;
+    """
+    meta_result = execute_sql(
+        conn, check_sql,
+        (area_id, map_name_en, shp_version, stage),
+        fetch_one=True
+    )
+    if meta_result and os.path.exists(meta_result[0]):
+        logger.debug(
+            f"raw 未變動且 masked 已存在，跳過 "
+            f"area_id={area_id} / {map_name_en}。"
+        )
+        return True
+    return False
 
 def check_shp_needs_update(conn, shp_version: str) -> bool:
     """
@@ -514,6 +601,7 @@ def upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool:
 
     # 3. 幾何合法性修正 (Topological cleaning)
     logger.info(f"執行幾何合法性檢查：make_valid + buffer(0)...")
+    # 未來若要處理「村里」級別，建議改在迴圈內逐筆處理 record['geometry'].make_valid()，或是確認 SHP 讀取時就已經是乾淨的
     gdf['geometry'] = gdf['geometry'].make_valid().buffer(0)
 
     # 4. 【關鍵】參數與 SQL 組裝
@@ -539,12 +627,12 @@ def upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool:
     # 5. 批次執行
     logger.notice(f"開始批次寫入行政區界到GIS_001，共 {total} 筆（多版本模式）")
     data_records = gdf.to_dict('records')
+    ver_town = "TOWN_MOI"
     
     try:
         for record in tqdm(data_records, desc=f"寫入行政區界", unit="row"):
             # 產生 area_id
             area_id = record.get('COUNTYID') if is_county_level else record.get('TOWNID')
-            ver_town = "TOWN_MOI"
             if area_id == "T28" and ver_town.lower() in shp_version.lower():
                 total -= 1
                 town_name = record.get("TOWNNAME")
@@ -579,7 +667,7 @@ def upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool:
 
         # 全部成功才 commit
         conn.commit()
-        logger.success(f"行政區界入庫完成！版本 {shp_version}，共 {total} 筆")
+        logger.success(f"行政區界入庫完成！版本 {shp_version}，共 {total} 筆資料。")
         return True
 
     except Exception as e:

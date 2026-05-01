@@ -30,12 +30,55 @@ from datetime import datetime
 import os
 import numpy as np
 from logs_handle import logger
+from typing import Union
 
 # 白色背景排除閾值：BGR 各分量需同時 >= 254 才視為白色背景被排除。
 # 使用 < 254 而非 != 255，目的是將抗鋸齒、JPEG 壓縮產生的
 # 接近白色像素（例如 253,255,255）一併排除，避免混入色彩對應表。
 WHITE_THRESHOLD = 254
 
+def is_nearly_white(image: Union[bytes, np.ndarray], white_threshold: int = WHITE_THRESHOLD) -> bool:
+    """
+    檢查影像內容是否幾乎全白。
+    因為存檔開銷極小，最新版本不使用。
+    Args:
+        image: 影像來源，接受兩種格式：
+            - bytes：WMS 下載的原始 binary 資料（fetch_wms_image 的輸入前）
+            - np.ndarray：已解碼的影像矩陣，shape=(H, W, C) channel-last，
+              例如 png_geographic_mapping 回傳的 out_img.transpose(1, 2, 0)
+        white_threshold: 判定為白色的門檻值 (0-255)，預設 254。
+    Returns:
+        bool: True 表示幾乎全白，False 表示含有顯著內容。
+    """
+    if not image:
+        return False
+
+    # 依輸入型別取得影像矩陣
+    if isinstance(image, bytes):
+        if not image:
+            return False
+        img = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            logger.error("is_nearly_white：bytes 影像解碼失敗，無法檢查顏色。")
+            return False
+    elif isinstance(image, np.ndarray):
+        img = image
+    else:
+        logger.error(f"is_nearly_white：不支援的輸入型別 {type(image)}。")
+        return False
+    
+    # 處理顏色通道
+    if img.ndim == 3:
+        channels = img.shape[2]
+        if channels == 4:
+            img_to_check = img[:, :, :3]  # 忽略 Alpha
+        else:
+            img_to_check = img
+    else:
+        img_to_check = img  # 灰階直接檢查
+
+    mean_value = np.mean(img_to_check)    
+    return mean_value >= white_threshold
 
 def load_image_with_chinese_path(file_path: str) -> "np.ndarray | None":
     """

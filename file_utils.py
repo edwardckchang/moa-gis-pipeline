@@ -1,6 +1,7 @@
 import json
-import os, re
+import os
 from logs_handle import logger
+from typing import Union
 
 def load_json_data(file_path: str):
     """
@@ -34,7 +35,7 @@ def load_json_data(file_path: str):
             return None    
     return data
 
-def save_json_data(data: list, file_path: str) -> str:
+def save_json_data(data: Union[list, dict], file_path: str) -> str:
     """
     將 JSON 資料儲存到指定路徑。
     Args:

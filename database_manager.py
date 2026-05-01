@@ -1,7 +1,7 @@
 import psycopg2
 from logs_handle import logger
 from typing import List, Dict, Optional, Any
-from utils import Checkpoint
+from utils import checkpoint as cp
 
 def connect_conn(username, password, dbname, host="localhost", port=5432):
     try:
@@ -75,7 +75,7 @@ def generate_global_data():
     """
     if not _ensure_connection(conn):
         return {}
-    if not table_exists("metadata_index"):
+    if not table_exists(conn,"metadata_index"):
         return {}
     logger.notice("INFO: 正在從資料庫生成 metadata...")
     sql_query = "SELECT * FROM metadata_index;"

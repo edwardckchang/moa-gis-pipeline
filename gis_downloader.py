@@ -43,15 +43,14 @@ import numpy as np
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from logs_handle import logger
 from datetime import datetime
-import os
-
+import os, time
 
 def replace_url_parameters(original_url: str, new_params: dict) -> str:
     """
     替換（或新增）URL 查詢字串中的指定參數，其餘參數保持不變。
-
     使用 urllib.parse 解析後重組，安全處理多值參數（parse_qs 回傳 list）。
     新值一律轉為字串後以單元素 list 覆蓋，確保不產生重複參數。
+    特別處理大小寫不敏感的覆蓋，避免同時出現 bbox 與 BBOX 的情況。
 
     Args:
         original_url (str): 原始 WMS URL，例如：
@@ -77,76 +76,109 @@ def replace_url_parameters(original_url: str, new_params: dict) -> str:
         'https://example.com/wms?BBOX=120%2C23%2C121%2C24&WIDTH=857'
     """
     parsed_url = urlparse(original_url)
+    # query_params 格式為 {key: [value1, value2]}
     query_params = parse_qs(parsed_url.query)
-    for key, value in new_params.items():
-        query_params[key] = [str(value)]
+
+    for new_key, new_value in new_params.items():
+        # 尋找現有參數中，是否存在大小寫不同但名稱相同的 key
+        # 例如：new_key 是 'BBOX'，而 query_params 裡有 'bbox'
+        target_keys = [k for k in query_params.keys() if k.lower() == new_key.lower()]
+        
+        # 刪除所有衝突的舊 Key (不論大小寫)
+        for k in target_keys:
+            del query_params[k]
+        
+        # 插入新的參數值
+        query_params[new_key] = [str(new_value)]
+
+    # 重新組裝 URL
     updated_query = urlencode(query_params, doseq=True)
     return urlunparse(parsed_url._replace(query=updated_query))
 
-
-def fetch_wms_image(url: str) -> "np.ndarray | None":
+def fetch_wms_image(url: str) -> "bytes | None":
     """
-    向 WMS 服務發送 GET 請求，並將回應的 PNG bytes 解碼為 cv2 BGR 影像陣列（不落地）。
-
-    解碼流程：
-      response.content（bytes）
-        → np.frombuffer(..., dtype=np.uint8)（1D uint8 陣列）
-        → cv2.imdecode(..., cv2.IMREAD_COLOR)（H×W×3 BGR ndarray）
-
+    向 WMS 服務發送 GET 請求，直接回傳 PNG bytes（不落地）。
+    具備指數退避重試機制。
     Args:
         url (str): 完整的 WMS GetMap 請求 URL，通常由 replace_url_parameters() 組裝。
 
     Returns:
-        numpy.ndarray | None:
-          - 成功：shape=(H, W, 3)，dtype=uint8，色彩順序為 BGR（cv2 預設）
+        bytes | None:
+          - 成功：PNG bytes
           - 失敗（HTTP 錯誤、timeout、解碼失敗）：None
 
     Notes:
         - timeout 固定為 30 秒；WMS 服務對大範圍 BBOX 的回應可能較慢，
           Phase 3 可根據實測調整或改為動態計算
-        - cv2.IMREAD_COLOR 忽略 alpha channel（PNG 透明度），
-          若 WMS 回傳含透明背景的 RGBA PNG，透明區域會被填為黑色而非白色；
-          目前 talis.moa.gov.tw 回傳的 PNG 背景為白色（RGB 255,255,255），
-          不受此影響
         - WMS 服務在參數錯誤時可能回傳 HTTP 200 但內容為 XML 錯誤訊息，
-          此情況下 cv2.imdecode() 會回傳 None，已由 logger.error 記錄
-
-    TODO（Phase 3）：
-        - [ ] 加入 Content-Type 驗證：若 response.headers["Content-Type"] 不含 "image"，
-              記錄回應內容（response.text[:200]）以便 debug，而非直接嘗試解碼
-        - [ ] 加入重試機制：對 requests.exceptions.Timeout 與 HTTPError (5xx) 最多重試 3 次，
-              間隔建議 2^n 秒（指數退避），避免暫時性服務中斷導致整批跳過
+          此情況下 None，已由 logger.error 記錄
     """
+    max_retries = 3
+    for n in range(max_retries + 1):
+        try:
+            response = requests.get(url, timeout=10)            
+            # 如果是 5xx 錯誤，觸發 HTTPError 進入重試邏輯
+            # 4xx 錯誤（如 BBOX 錯誤）通常重試也沒用，所以直接 raise
+            if 500 <= response.status_code < 600:
+                response.raise_for_status()            
+            # 其他狀態碼（如 200, 4xx）
+            response.raise_for_status()
+            # 檢查 Content-Type 確保是影像
+            content_type = response.headers.get('Content-Type', '')
+            if 'image' not in content_type:
+                logger.error(f"下載內容不是影像。Type: {content_type}, URL: {url}")
+                return None
+            return response.content
+        except (requests.exceptions.Timeout, requests.exceptions.HTTPError) as e:
+            # 判斷是否還有重試機會
+            if n < max_retries:
+                wait_time = 2 ** n * 5  # 指數退避：1s, 2s, 4s
+                logger.warning(
+                    f"WMS 請求失敗 ({e})，準備進行第 {n+1} 次重試，"
+                    f"等待 {wait_time} 秒... (URL: {url})"
+                )
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error(f"已達到最大重試次數 ({max_retries})，放棄下載：{url}")
+                return None                
+        except Exception as e:
+            # 對於非暫時性的錯誤（如 URL 格式錯誤、連線被拒絕等），直接放棄不重試
+            logger.error(f"下載 WMS 影像時發生未預期錯誤（不重試）：{e}")
+            return None            
+    return None
+
+def _compare_and_get_status(file_path: str, new_bytes: bytes) -> str:
+    """
+    透過 Binary (Bytes) 比對檔案內容。
+    
+    Args:
+        file_path: 磁碟上的既有檔案路徑
+        new_bytes: 準備寫入的新影像 Binary 內容
+    Returns:
+        "created" | "unchanged" | "updated"
+    """
+    # 1. 檔案不存在，視為新增
+    if not os.path.exists(file_path):
+        return "created"
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-
-        file_bytes = np.frombuffer(response.content, dtype=np.uint8)
-        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-        if image is None:
-            logger.error(
-                f"影像解碼失敗，回傳內容可能不是有效的 PNG。"
-                f"Content-Type: {response.headers.get('Content-Type', 'unknown')}"
-            )
-            return None
-
-        logger.notice(f"WMS 影像下載成功，尺寸：{image.shape[1]}×{image.shape[0]}px")
-        return image
-
-    except requests.exceptions.Timeout:
-        logger.error(f"WMS 請求逾時（timeout=30s）：{url}")
-        return None
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"WMS HTTP 錯誤：{e}，URL：{url}")
-        return None
+        # 2. 讀取既有檔案的 Binary 內容
+        with open(file_path, 'rb') as f:
+            existing_bytes = f.read()
+        # 3. 快速比對：先比對長度 (檔案大小)，若不同則必定不同
+        if len(existing_bytes) != len(new_bytes):
+            return "updated"
+        # 4. 深度比對：比對內容 (也可以用 hashlib 做雜湊比對更穩)
+        # 這裡直接用 == 運算子比對 bytes 是效能最高且最直接的做法
+        if existing_bytes == new_bytes:
+            return "unchanged"        
+        return "updated"
     except Exception as e:
-        logger.error(f"下載 WMS 影像時發生未預期錯誤：{e}")
-        return None
-
+        logger.warning(f"_compare_and_get_status：讀取既有檔案失敗 ({e})，視為需更新。")
+        return "updated"
 
 def save_image(
-    image: np.ndarray,
+    image_data: "np.ndarray | bytes",
     classification: str,
     region_name_en: str,
     shp_version: str,
@@ -204,49 +236,34 @@ def save_image(
           判定為 (C, H, W)，執行 transpose((1, 2, 0)) 後再編碼
         - 中英對照表（classification、region_name_en）的查表邏輯在 main_gis.py，
           本函式只接受已轉換的英文字串
-
-    TODO（Phase 3）：
-        - [ ] 補完 channel-first 偵測與 transpose（見 Notes）
-        - [ ] 補完重複偵測邏輯（raw 與 masked 共用）：
-              1. 若目標路徑已存在，cv2.imread() 讀入既有檔案
-              2. shape 不同 → status="updated"（界線或解析度有變）
-              3. np.array_equal() 相同 → status="unchanged"，直接回傳不寫入
-        - [ ] 中英對照表的載入與維護方式待 Phase 3 確認：
-              圖檔中英對照表（WMS 圖層名稱）與行政區中英對應表（鄉鎮市區名稱）
-              目前規劃由 main_gis.py 持有並查表後傳入，
-              對照表本身以 hardcode dict 或 JSON 管理待決定
     """
-    # 組合落地路徑
-    if stage == "raw":
-        dir_path = os.path.join("output", "wms_images", classification, "raw")
-    elif stage == "masked":
-        dir_path = os.path.join("output", "wms_images", classification, "masked", shp_version)
-    else:
-        logger.error(f"save_image：stage 參數無效（'{stage}'），應為 'raw' 或 'masked'。")
-        return {"status": "error", "path": ""}
-
+    # 1. 組合落地路徑
+    dir_path = os.path.join("output", "wms_images", shp_version, stage, classification)
     os.makedirs(dir_path, exist_ok=True)
     file_path = os.path.join(dir_path, f"{region_name_en}.png")
-
-    # TODO（Phase 3）：channel-first 偵測與 transpose
-    # if image.ndim == 3 and image.shape[0] <= 4:
-    #     image = image.transpose((1, 2, 0))
-
-    # ndarray → PNG bytes
-    success, buf = cv2.imencode('.png', image)
-    if not success:
-        logger.error(f"cv2.imencode 失敗：{file_path}")
+    # 2. 根據輸入類型處理
+    if isinstance(image_data, bytes):
+        final_bytes = image_data
+    elif isinstance(image_data, np.ndarray):     
+        success, buf = cv2.imencode('.png', image_data)
+        if not success:
+            logger.error(f"cv2.imencode 失敗：{file_path}")
+            return {"status": "error", "path": ""}
+        final_bytes = buf.tobytes()
+    else:
+        logger.error(f"檔案{dir_path}的格式錯誤，無法儲存。")
         return {"status": "error", "path": ""}
-
-    # TODO（Phase 3）：重複偵測（np.array_equal），見 docstring TODO
-    # 目前暫時跳過比對，直接寫入
-    status = "updated" if os.path.exists(file_path) else "created"
-
+    # --- 執行 Binary 比對 ---
+    status = _compare_and_get_status(file_path, final_bytes)
+    # 3. 落地儲存
+    if status == "unchanged":
+        logger.debug(f"[unchanged] {stage} 影像二進位內容一致，跳過：'{file_path}'")
+        return {"status": "unchanged", "path": file_path}
     try:
         with open(file_path, 'wb') as f:
-            f.write(buf.tobytes())
-        logger.notice(f"[{status}] {stage} 影像已儲存至：'{file_path}'")
+            f.write(final_bytes)
+        logger.notice(f"[{status}] {stage} 影像已儲存：'{file_path}'")
         return {"status": status, "path": file_path}
     except Exception as e:
-        logger.error(f"儲存影像失敗：{e}，路徑：{file_path}")
+        logger.error(f"儲存影像失敗：{e}")
         return {"status": "error", "path": ""}

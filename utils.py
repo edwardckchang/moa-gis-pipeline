@@ -310,20 +310,6 @@ def get_filename_from_path(file_path: str) -> str:
     
     return base_name
 
-CHECKPOINT_ENABLED = False
-PASS = False
-def checkpoint(label: str, data: dict = None):
-    if not CHECKPOINT_ENABLED:
-        return
-    import inspect
-    caller = inspect.stack()[1].function  # 自動顯示呼叫者函式名
-    print(f"\nRUN: [{caller}] {label}")
-    if data:
-        for k, v in data.items():
-            print(f"  {k}: {v}")
-    if PASS:
-        input(">>> 按 Enter 繼續...")
-
 def process_string(input_string: str) -> str:
     """
     處理輸入的字串：
@@ -359,67 +345,61 @@ CHECKPOINT_ENABLED = False
 PASS = False
 
 # ================= 2. 核心檢查類別 =================
-class Checkpoint:
-    def __init__(self):
-        # 取得呼叫者的函式名
-        try:
-            self.caller = inspect.stack()[1].function
-        except:
-            self.caller = "Unknown"
-
-    # 「進門」要做的事 (with 開始時執行)
-    def __enter__(self):
-        return self
-
-    # 「出門」要做的事 (with 結束時執行)
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-    # 功能函式：漂亮的印出資料
-    def show(self, data, name: str = "Unnamed Data"):
-        if not CHECKPOINT_ENABLED:
-            return
-        print(f"\n{'='*20} [CHECKPOINT: {self.caller}] {'='*20}")
-        
-        prefix = "    "
-        print(f"  [Data] {name}:")
-        
-        # 1. 字典處理
-        if isinstance(data, dict):
-            print(f"{prefix}(Type: Dict, Keys: {len(data)})")
-            for i, (k, v) in enumerate(list(data.items())[:3]):
-                print(f"{prefix}[{i}] {k}: {v} [Type: {type(v).__name__}]")
-            if len(data) > 3: print(f"{prefix}...")
-            return
-        
-        # 2. 表格型資料 (Pandas/Numpy)
-        if hasattr(data, 'head'):
-            print(f"{prefix}(Type: {type(data).__name__}, Shape: {getattr(data, 'shape', 'N/A')})")
-            print(data.head(3))
-            return
-        
-        # 3. 核心修正：排除所有「不該拆開看」的單一物件
-        # 這裡加入了 str, bytes, 和 io 相關的檔案物件
-        import io
-        if isinstance(data, (str, bytes, io.IOBase)):
-            print(f"{prefix}Value: {repr(data)} [Type: {type(data).__name__}]")
-            return
-
-        # 4. 序列處理 (List/Tuple/Iterable)
-        try:
-            length = len(data)
-            print(f"{prefix}(Type: {type(data).__name__}, Total: {length})")
-            for i, item in enumerate(data):
-                if i >= 3:
-                    print(f"{prefix}...")
-                    break
-                print(f"{prefix}[{i}] {item} [Type: {type(item).__name__}]")
-        except:
-            # 5. 單一數值 (Int/Float 等不支援 len 的物件)
-            print(f"{prefix}Value: {data} [Type: {type(data).__name__}]")
+# 功能函式：漂亮的印出資料
+def checkpoint(data, name: str = "Unnamed Data"):
+    def _pause():
         if CHECKPOINT_ENABLED and PASS:
-            input("\n>>> [PAUSED] 按 Enter 繼續...")
+            input(">>> [PAUSED] 按 Enter 繼續...")
             print(f"{'='*50}\n")
+    if not CHECKPOINT_ENABLED:
+        return
+    try:
+        caller = inspect.stack()[1].function
+    except:
+        caller = "Unknown"        
+    print(f"{'='*20} [CHECKPOINT: {caller}] {'='*20}")
+    
+    prefix = "    "
+    print(f"  [Data] {name}:")
+    
+    # 1. 字典處理
+    if isinstance(data, dict):
+        print(f"{prefix}(Type: Dict, Keys: {len(data)})")
+        for i, (k, v) in enumerate(list(data.items())[:3]):
+            print(f"{prefix}[{i}] {k}: {v} [Type: {type(v).__name__}]")
+        if len(data) > 3: print(f"{prefix}...")
+        _pause()
+        return
+    
+    # 2. 表格型資料 (Pandas/Numpy)
+    if hasattr(data, 'head'):
+        print(f"{prefix}(Type: {type(data).__name__}, Shape: {getattr(data, 'shape', 'N/A')})")
+        print(data.head(3))
+        _pause()
+        return
+    
+    # 3. 核心修正：排除所有「不該拆開看」的單一物件
+    # 這裡加入了 str, bytes, 和 io 相關的檔案物件
+    import io
+    if isinstance(data, (str, bytes, io.IOBase)):
+        print(f"{prefix}Value: {repr(data)} [Type: {type(data).__name__}]")
+        _pause()
+        return
+
+    # 4. 序列處理 (List/Tuple/Iterable)
+    try:
+        length = len(data)
+        print(f"{prefix}(Type: {type(data).__name__}, Total: {length})")
+        for i, item in enumerate(data):
+            if i >= 3:
+                print(f"{prefix}...")
+                break
+            print(f"{prefix}[{i}] {item} [Type: {type(item).__name__}]")
+    except:
+        # 5. 單一數值 (Int/Float 等不支援 len 的物件)
+        print(f"{prefix}Value: {data} [Type: {type(data).__name__}]")
+    _pause()
+    return
 
 # ================= 3. 主模組初始化函式 =================
 def init_checkpoint(enabled: bool, pause: bool):
