@@ -563,7 +563,6 @@ def check_shp_needs_update(conn, shp_version: str) -> bool:
         result = execute_sql(conn, sql, (shp_version,), fetch_one=True)
         
         if result:
-            logger.notice(f"✅ 版本 {shp_version} 已完整入庫，跳過。")
             return False  # 已存在，不需要更新
         
         logger.notice(f"🚀 版本 {shp_version} 尚未入庫，準備開始作業...")

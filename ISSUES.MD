@@ -360,12 +360,83 @@
 **狀態：** 🔄 進行中
 **前置條件：** Issue 5.1 完成
 
-#### `gis_db.py` — 資料讀寫函式
-- [ ] 實作 `get_gis_metadata(conn, area_level: str = None) -> pd.Dataframe`：
-  - [ ] `area_level` 可傳 `"county"`、`"town"` 或 `None`
-  - [ ] 從 `GIS_metadata` 查詢對應紀錄，以 `execute_sql(..., fetch_all=True)` 取出
-  - [ ] 若表不存在，回傳空 pd.Dataframe 並 `logger.warning`
-> Checklist 於 Issue 5.2 開始時補充
+#### 設計決策（已確認）
+- 輸出粒度：一次量化 = 一個 parquet，含所有圖層 × 所有鄉鎮 + 縣市（wide format）
+- 主鍵：`area_id`（COUNTYID / TOWNID，天然唯一）
+- 固定欄位：`area_id`、`area_level`、`COUNTYID`、`COUNTYNAME`、`TOWNID`（county 列填 null）、`TOWNNAME`（county 列填 null）
+- 量化特徵欄位命名細節於實作 `quantify_mask()` 時另立 TODO
+- 輸出檔名：`GIS_quantified_{shp_date}_{run_date}.parquet` + `GIS_quantified_{shp_date}_{run_date}.meta.json`
+- `shp_date`：從 shp_version 字串提取 7 位民國年月日（沿用現有 regex）
+- 量化輸入來源：查詢 GIS_metadata（stage='masked'）作為主索引，`os.path.exists()` 為前置磁碟守衛
+
+---
+
+#### `gis_db.py` — 查詢待量化清單
+
+- [ ] 實作 `get_gis_metadata(conn, shp_version: str, stage: str = 'masked', area_level: str = None) -> pd.DataFrame`：
+  - [ ] 查詢 GIS_metadata，條件：`shp_version`、`stage`，可選 `area_level`
+  - [ ] 以 `execute_sql(..., fetch_all=True)` 取出，轉為 DataFrame 回傳
+  - [ ] 若表不存在或查無資料，回傳空 DataFrame 並 `logger.warning`
+
+---
+
+#### `gis_quantifier.py` — 核心量化函式
+
+- [ ] 實作 `compute_pixel_area_m2(bounds: tuple, width: int, height: int) -> float`：
+  - [ ] 將 bounds（EPSG:4326）對應的矩形投影至 EPSG:3826，計算總面積（m²）
+  - [ ] 除以 `width × height` 得每像素面積（m²）
+  - [ ] 使用 `pyproj.Transformer` 或 `shapely` + geopandas 投影
+- [ ] 實作 `quantify_mask(masked_image: np.ndarray, color_map: dict, pixel_area_m2: float) -> dict`：
+  - [ ] 接收 masked image（channel-last BGR, uint8）、該圖層的 color_to_value dict、每像素面積
+  - [ ] 排除背景像素（純黑 `(0,0,0)`）
+  - [ ] 統計各色彩的像素數，結合 `pixel_area_m2` 計算面積
+  - [ ] 依 color_to_value 的 value 型別分三路處理（scalar / categorical / list）
+  - [ ] 回傳 `{feature_name: value, ...}` dict；欄位命名細節於此函式實作時另立 TODO
+  - [ ] 若 masked image 內無非背景像素（全黑），回傳空 dict 並 `logger.warning`
+
+---
+
+#### `file_utils.py` — Parquet 讀寫
+
+- [ ] 新增 `save_parquet(df: pd.DataFrame, file_path: str) -> str`：
+  - [ ] 建立必要目錄，以 `pandas.DataFrame.to_parquet()` 存檔
+  - [ ] 回傳實際儲存路徑
+- [ ] 新增 `load_parquet(file_path: str) -> pd.DataFrame`：
+  - [ ] 確認檔案存在，以 `pandas.read_parquet()` 讀取
+  - [ ] 失敗時回傳空 DataFrame 並 `logger.error`
+
+---
+
+#### `main_gis.py` — 量化流程串接
+
+- [ ] 實作 `_run_quantification(conn, shp_date: str, output_dir: str = "output") -> str`：
+  - [ ] 呼叫 `get_gis_metadata(conn, shp_version=...)` 取得待量化清單，篩選 `stage='masked'`
+  - [ ] `os.path.exists()` 逐筆驗證 file_path，缺失則 `logger.warning` 跳過
+  - [ ] 載入 `geographic_color_metadata.json`
+  - [ ] 以 `area_id` 為列，逐圖層逐行政區執行：
+    - `cv2.imread()` 載入 masked image
+    - `compute_pixel_area_m2()` 計算像素面積
+    - `quantify_mask()` 取得特徵 dict
+    - 累積至結果 DataFrame
+  - [ ] 補入固定欄位（`area_id`、`area_level`、`COUNTYID`、`COUNTYNAME`、`TOWNID`、`TOWNNAME`）
+  - [ ] 呼叫 `save_parquet()` 輸出主檔
+  - [ ] 組裝 sidecar dict（`shp_date`、`quantified_at`、`source_record_count`、`classifications`、`latest_wms_recorded_at`、`color_metadata_mtime`），呼叫 `save_json_data()` 輸出 `.meta.json`
+  - [ ] `logger.success()` 記錄輸出路徑，回傳 parquet 路徑
+- [ ] 在 `main()` 選單新增選項 `3. 執行量化輸出`：
+  - [ ] 互動式輸入或自動偵測 `shp_date`
+  - [ ] 呼叫 `_run_quantification(conn, shp_date)`
+
+---
+
+#### 驗證
+
+- [ ] 單元測試 `compute_pixel_area_m2()`：以已知 BBOX 驗算像素面積合理性
+- [ ] 單元測試 `quantify_mask()`：以小型測試影像（手動建立已知色彩分布）驗證三種 value 型別路徑各自輸出正確
+- [ ] 整合測試 `_run_quantification()`：
+  - [ ] 確認輸出 parquet 的 row count = county 筆數 + town 筆數
+  - [ ] 確認 county 列的 `TOWNID`、`TOWNNAME` 為 null
+  - [ ] 確認 sidecar JSON 存在且欄位完整
+- [ ] `git commit`（message：`[Feature] GIS quantification matrix output`）
 - [ ] 建立 `requirements.txt`
 
 ---

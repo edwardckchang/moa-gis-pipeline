@@ -88,15 +88,19 @@ from file_utils import load_json_data, save_json_data
 
 def _save_checkpoint(shp_ver: str, map_name_en: str, area_id: str) -> None:
     data = load_json_data(CHECKPOINT_PATH)
+    if data == None:
+        data = {}
     data[shp_ver] = {
         "map_name_en": map_name_en,
         "area_id":     area_id,
         "status":      "interrupted"
     }
-    save_json_data(data)
+    save_json_data(data, CHECKPOINT_PATH)
 
 def _load_checkpoint(shp_ver: str) -> tuple[dict, bool]:
     data = load_json_data(CHECKPOINT_PATH)
+    if data == None:
+        return {}, True
     entry = data.get(shp_ver, {})
     if not entry:
         return {}, True
@@ -113,11 +117,13 @@ def _load_checkpoint(shp_ver: str) -> tuple[dict, bool]:
 def _clear_checkpoint(shp_ver: str) -> None:
     """僅更新指定版本的 status，其他版本不受影響。"""
     data = load_json_data(CHECKPOINT_PATH)
+    if data == None:
+        return
     if shp_ver in data:
         data[shp_ver]["status"] = "completed"
     else:
         data[shp_ver] = {"status": "completed"}
-    save_json_data(data)
+    save_json_data(data, CHECKPOINT_PATH)
 
 def _run_shp_pipeline(conn, shp_dir: str) -> None:
     """
@@ -138,6 +144,7 @@ def _run_shp_pipeline(conn, shp_dir: str) -> None:
         shp_path = os.path.join(shp_dir, shp_file)
         shp_version = os.path.splitext(shp_file)[0]
         if not check_shp_needs_update(conn, shp_version):
+            logger.info(f"✅ 版本 {shp_version} 已完整入庫，跳過。")
             continue
         gdf = shp_reader(shp_path)
         upsert_gis_boundary(conn, gdf, shp_version)    
@@ -261,9 +268,12 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
             continue
         if skip_map: # 讀取中斷點，跳過上次完成的圖層
             if map_name_en != resume_map:
-                input(f"Checkpoint 跳過圖層：{map_name_en}")
+                logger.notice(f"Checkpoint 跳過圖層：{map_name_en}")
                 continue
             # 找到 checkpoint 圖層，停止跳過
+            for n in range(3, 0, -1):
+                print(f"--- {n} 秒後繼續 ---", end="\r")
+                time.sleep(1)
             skip_map  = False
             skip_area = bool(resume_area)
 
@@ -271,10 +281,12 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
             area_id = polygon_record.get("area_id")
             if skip_area: # 讀取中斷點，跳過上次完成的行政區
                 if area_id != resume_area:
-                    logger.debug(f"Checkpoint 跳過行政區：{area_id}")
+                    logger.notice(f"Checkpoint 跳過行政區：{area_id}")
                     continue
                 # 找到 resume_area，這筆已完成，跳過本身從下一筆開始
-                input(f"Checkpoint 最後跳過的行政區：{area_id}")
+                for n in range(3, 0, -1):
+                    print(f"--- {n} 秒後繼續 ---", end="\r")
+                    time.sleep(1)
                 skip_area = False
                 continue
             shp_version = polygon_record.get("shp_version")
@@ -305,7 +317,7 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
                 logger.error(f"geometry 為 None，跳過 area_id={area_id}。")
                 continue
             region_en = region_en.replace(" ", "_")
-            cp(f"{[shp_version, area_level, area_id, geometry_obj, region_en]}")
+            # cp(f"{[shp_version, area_level, area_id, geometry_obj, region_en]}")
             
             # 3b. 計算 BBOX 與請求尺寸
             bounds = geometry_obj.bounds  # (minx, miny, maxx, maxy) == (lon_min, lat_min, lon_max, lat_max)
@@ -330,7 +342,7 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
             if ori_save_info['status'] == "error":
                 logger.logs(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 落地失敗，跳過。")
                 continue
-            cp(ori_save_info)
+            # cp(ori_save_info)
             if ori_save_info['status'] != "unchanged":                
                 logger.debug(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 落地完成，狀態為 {ori_save_info['status']}")
             # 3g. raw 未變動 → 確認 masked 是否已存在，存在則跳過遮罩
@@ -350,7 +362,7 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
 
             # 3i. 落地 masked 影像（channel transpose 由 save_image 內部統一處理）
             mask_save_info = save_image(masked_image, map_name_en, region_en, shp_version, "masked")
-            cp(mask_save_info)
+            # cp(mask_save_info)
             if mask_save_info['status'] == "error":
                 logger.logs(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 落地失敗，跳過。")
                 continue
@@ -428,7 +440,7 @@ def main(conn, target_res: int = 100) -> None:
 
 
 if __name__ == "__main__":
-    setup_logging(level=20)
+    setup_logging(level=15)
     load_dotenv()
     config = dotenv_values()
     DB_USER     = config.get("DB_USER")

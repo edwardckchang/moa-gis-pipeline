@@ -138,15 +138,16 @@ def get_or_create_map_name_en(chinese_name: str) -> str:
     2. 若找不到 → 判斷類型並引導使用者輸入
     3. 存入 overrides.json
     """
-
+    if "適栽性等級分布圖" in chinese_name:
+        pass
+    elif "栽性等級分布圖" in chinese_name:
+        chinese_name = chinese_name.replace("栽性等級分布圖", "適栽性等級分布圖")
     mapping = load_map_name_mapping()
-    
     if chinese_name in mapping:
         return mapping[chinese_name]
     
     logger.warning(f"未找到翻譯：'{chinese_name}'")
     print(f"\n=== 發現新圖層名稱：{chinese_name} ===")
-    
     # 自動判斷類型
     is_crop = "適栽性等級分布圖" in chinese_name
     suggested_type = "crop" if is_crop else None
@@ -175,8 +176,12 @@ def get_or_create_map_name_en(chinese_name: str) -> str:
             if not crop_en:
                 print("❌ 請輸入英文名稱")
                 continue
-                
-            print(f"✅ 接受：{crop_en}")
+            # 正確的重複檢查（檢查完整名稱）
+            full_name = f"crop_suitability_rating_map_{crop_en}"
+            if full_name in mapping.values():
+                print(f"❌ '{full_name}' 已存在，請使用其他名稱")
+                continue         
+            print(f"✅ 接受作物名稱：{crop_en}")
             break
             
         english_full = f"crop_suitability_rating_map_{crop_en}"

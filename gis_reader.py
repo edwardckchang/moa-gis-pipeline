@@ -127,7 +127,7 @@ def get_width_height_from_geographic_mapping(
     """
     mid_longitude = (bounds[0] + bounds[2]) / 2
     mid_latitude = (bounds[1] + bounds[3]) / 2
-    logger.notice(f"BBOX 中心點：lon={mid_longitude:.4f}, lat={mid_latitude:.4f}")
+    # logger.notice(f"BBOX 中心點：lon={mid_longitude:.4f}, lat={mid_latitude:.4f}")
 
     longitude_start = (mid_latitude, bounds[0])  # (Lat, Lon)
     longitude_end   = (mid_latitude, bounds[2])  # (Lat, Lon)
@@ -140,7 +140,7 @@ def get_width_height_from_geographic_mapping(
     W_pixel = round(distance_longitude * 1000 / target_resolution_m)
     H_pixel = round(distance_latitude  * 1000 / target_resolution_m)
 
-    logger.notice(f"BBOX：W={W_pixel}px H={H_pixel}px（{target_resolution_m}m/px）")
+    # logger.notice(f"BBOX：W={W_pixel}px H={H_pixel}px（{target_resolution_m}m/px）")
     return max(1, int(W_pixel)), max(1, int(H_pixel))
 
 
