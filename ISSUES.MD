@@ -175,9 +175,9 @@
 - [X] 決定備份頻率（建議：每個 Phase 完成後手動執行一次）
 - [X] 確認備份檔案會同步到外部儲存（USB）
 
-#### `geographic_color_metadata.json` 定位確認
-- [X] 確認此檔案進入 git 追蹤（設定檔性質，幾 KB，適合 git 管理）
-- [X] 確認此檔案**不入庫**
+#### `*.json` 定位確認
+- [X] 執行階段產生的`*.json`檔案進入 git 追蹤（設定檔性質，幾 KB，適合 git 管理）
+- [X] 確認 `geographic_color_metadata.json`檔案**不入庫**
   - 原因：`color_to_value` 為異質結構，入庫複雜度高、收益低；git 已提供版本追蹤能力
 - [X] 在 `gis_db.py` 的 docstring 中記錄此決策
 
@@ -322,8 +322,12 @@
 - [X] 實作 `log_gis_metadata(conn, area_id: str, area_level: str, classification: str, shp_version: str, save_info: dict, stage: str = "raw") -> None`：
   - [X] 以 `execute_sql()` 寫入 `GIS_metadata`，conflict 欄位為 `(area_id, classification, shp_version, stage)`
   - [X] 衝突時更新 `file_path`、`recorded_at`
+  - [X] 圖層更新時寫入 `layer_updated` = `True` (預設為 `False`)
 - [X] 實作 `load_map_links`，讀取 `metadata_index` 並從地理圖資分類（002）中獲得對應的圖層連結
 - [X] 實作 `load_all_polygon_coords`，讀取 `GIS_001` 獲得行政區界資料
+- [X] 新增 `get_missing_records`，獲得所有未入庫的行政區界之圖層
+- [X] 新增 `clear_failed_records`，全部完成後清除失敗記錄
+- [X] 修改表格建置，用 `ENUM ('raw', 'masked', 'failed')` 來寫入 `stage` 欄位參數
 
 ---
 
@@ -335,11 +339,13 @@
   - [X] 呼叫 `load_map_links` 與 `load_all_polygon_coords`，獲得基本圖層連結與行政區界資料
   - [X] 對GeoDataframe中所有 'town' 層級的 'COUNTYENG' 欄位進行補值
   - [X] 可選 SHP 版本，按照民國年月日版本號顯示
-  - [X] 雙層迴圈圖層連結與行政區界資料
+  - [X] 呼叫 `get_missing_records`，獲得所有未入庫的行政區界之圖層
+  - [X] 雙層迴圈圖層名稱與行政區界資料
   - [X] 不排除 raw／mask 為全白的圖層
     - 因為存檔開銷極小，因此不再判斷無 GIS 資料的圖層
   - [X] 記錄中斷資訊，包含版本、圖層與行政區
   - [X] 將遮罩參數改為全黑 = 0，方便以後的面積計算
+  - [X] 將單一行政區處理的邏輯架構獨立為子函式 `_process_single_town`
 
 ---
 
@@ -348,11 +354,20 @@
 - [X] 修正 `fetch_wms_image`，改為返回binary image，並加入重試邏輯
 - [X] 修正 `_compare_and_get_status`的比對方式，改為binary image比對
 - [X] 修正 `save_image`，可接受binary image或nd.array並transpose後存檔
+    - 修改存檔路徑，從shp_version改為shp_ver
+        - output/wms_images/shp_ver/raw/{classification}/
+        - output/wms_images/shp_ver/masked/{classification}/
+
+---
+
+#### `gis_reader.py` — 區界過濾
+- [X] 新增 `filter_remote_taiwan_islands`，過濾東沙群島等外島區界
 
 ---
 
 #### `gis_quantifier.py` — 影像量化與色彩定義
 - [X] 新增函式 `is_nearly_white` 用來檢查影像是否接近全白，改為不使用
+- [X] `gis_db.py` 遷移：`add_color_mapping_level1()`
 
 ---
 
