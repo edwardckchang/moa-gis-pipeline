@@ -100,7 +100,7 @@ def load_map_name_mapping() -> dict:
             with open(OVERRIDE_FILE, "r", encoding="utf-8") as f:
                 overrides = json.load(f)
                 mapping.update(overrides)
-            logger.notice(f"已載入 {len(overrides)} 筆動態翻譯覆蓋")
+            logger.debug(f"已載入 {len(overrides)} 筆動態翻譯覆蓋")
         except Exception as e:
             logger.error(f"載入 overrides.json 失敗: {e}")
     
@@ -139,6 +139,7 @@ def get_or_create_map_name_en(chinese_name: str) -> str:
     3. 存入 overrides.json
     """
     if "適栽性等級分布圖" in chinese_name:
+        chinese_name = chinese_name.replace(" ", "")
         pass
     elif "栽性等級分布圖" in chinese_name:
         chinese_name = chinese_name.replace("栽性等級分布圖", "適栽性等級分布圖")

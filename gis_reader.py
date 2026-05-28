@@ -62,6 +62,7 @@ from rasterio.transform import from_bounds
 import geopandas as gpd
 from utils import checkpoint as cp
 from utils import init_checkpoint, checkpoint as cp
+from shapely.geometry import MultiPolygon
 
 def _natural_sort_key(s):
     """
@@ -288,41 +289,92 @@ def shp_reader(shp_path: str) -> gpd.GeoDataFrame:
     logger.info(f"SHP 讀取完成：{shp_path_nor}，共 {len(gdf_sorted)} 筆，CRS={gdf_sorted.crs}")
     return gdf_sorted
 
+def filter_remote_taiwan_islands(geometry_obj, target_res: int, bbox_threshold: int, lon_min: float = 118.0, lat_min: float = 20.0) -> "tuple | None":
+    """
+    若 geometry 的 BBOX 超出閾值，嘗試過濾離島子多邊形。
+    成功回傳 (filtered_geometry, bounds, width, height)
+    無法過濾回傳 None
+    """
+    bounds = geometry_obj.bounds  # (minx, miny, maxx, maxy) == (lon_min, lat_min, lon_max, lat_max)    
+    width, height = get_width_height_from_geographic_mapping(bounds, target_res)    
+    if width * height > bbox_threshold:
+        if geometry_obj.geom_type.lower() == "multipolygon":
+            valid_polygons = [poly for poly in geometry_obj.geoms if not (poly.bounds[0] < lon_min and poly.bounds[1] < lat_min)]
+            if valid_polygons:
+                return MultiPolygon(valid_polygons)
+            else:
+                logger.debug("過濾後沒有任何可用 Polygon")
+                return None
+        else:
+            logger.debug("單一 Polygon 面積即超出閾值")
+            return None
+    else:
+        logger.debug("不需要過濾的 geometry")
+        return None
 
 if __name__ == '__main__':
     setup_logging(10)
     shp_dir = "boundaries"
-    init_checkpoint(True, True)
+    init_checkpoint(True, False)
+    
     shp_file_list = [f for f in os.listdir(shp_dir) if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())]
-    gdf_all = None
-    path = os.path.normpath(r"output\wms_images\COUNTY_MOI_1140318\raw\farmland_productivity_levels\Taipei City.png")
-    image = cv2.imread(path, cv2.IMREAD_COLOR)
-    cv2.imshow('Raw Image', image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    # 讀取所有 SHP，合併成一個 GeoDataFrame
-    shp_file_list = [
-        f for f in os.listdir(shp_dir)
-        if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())
-    ]
     gdf_all = None
     for shp_file in shp_file_list:
         shp_path = os.path.join(shp_dir, shp_file)
+        shp_version = os.path.splitext(shp_file)[0]
         gdf = shp_reader(shp_path)
         gdf_all = pd.concat([gdf_all, gdf], ignore_index=True) if gdf_all is not None else gdf
-
     cp(gdf_all)
-    taipei_row = gdf_all.iloc[0]
-    geometry_obj = taipei_row.get('geometry')
-    bounds = geometry_obj.bounds
-    cp(bounds)
-    out_img, out_transform = png_geographic_mapping(geometry_obj, bounds, image, target_res=100)
-    if out_img is None:
-        logger.error("遮罩失敗")
-        raise SystemExit(1)
+    gdf_all.columns = gdf_all.columns.str.strip()
+    filtered_gdf = gdf_all[(gdf_all['COUNTYENG'] == 'Kaohsiung City') | (gdf_all['TOWNENG'] == 'Qijin District')].reset_index(drop=True)
+    print(filtered_gdf)
+    # 1. 取得第 0 列的幾何物件
+    geom = filtered_gdf.at[0, 'geometry']
 
-    logger.notice(f"out_img_display shape（表示用）：{out_img.shape}") 
+    # 2. 判斷它是否為多元幾何物件（MultiPolygon）
+    if geom.geom_type == 'MultiPolygon':
+        print(f"這是一個 MultiPolygon，總共包含 {len(geom.geoms)} 個 Polygon。")
+        print("-" * 50)
+        
+        # 3. 遍歷裡面的每一個 Polygon 並印出 bounds
+        for idx, poly in enumerate(geom.geoms):
+            # poly.bounds 的格式為 (minx, miny, maxx, maxy)
+            print(f"Polygon #{idx} 的範圍 (Bounds):")
+            print(f"  經度範圍 (X): {poly.bounds[0]:.5f} ~ {poly.bounds[2]:.5f}")
+            print(f"  緯度範圍 (Y): {poly.bounds[1]:.5f} ~ {poly.bounds[3]:.5f}")
+            print("-" * 30)
+    else:
+        print(f"這是一個單一的 {geom.geom_type}，範圍為: {geom.bounds}")
+    # print(filtered_gdf.iloc[0]['geometry'])
+    # print(filtered_gdf.iloc[1]['geometry'])
+    # path = os.path.normpath(r"output\wms_images\COUNTY_MOI_1140318\raw\farmland_productivity_levels\Taipei City.png")
+    # image = cv2.imread(path, cv2.IMREAD_COLOR)
+    # cv2.imshow('Raw Image', image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    # # 讀取所有 SHP，合併成一個 GeoDataFrame
+    # shp_file_list = [
+    #     f for f in os.listdir(shp_dir)
+    #     if f.endswith(".shp") and ("county" in f.lower() or "town" in f.lower())
+    # ]
+    # gdf_all = None
+    # for shp_file in shp_file_list:
+    #     shp_path = os.path.join(shp_dir, shp_file)
+    #     gdf = shp_reader(shp_path)
+    #     gdf_all = pd.concat([gdf_all, gdf], ignore_index=True) if gdf_all is not None else gdf
 
-    cv2.imshow('Mask Image', out_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # cp(gdf_all)
+    # taipei_row = gdf_all.iloc[0]
+    # geometry_obj = taipei_row.get('geometry')
+    # bounds = geometry_obj.bounds
+    # cp(bounds)
+    # out_img, out_transform = png_geographic_mapping(geometry_obj, bounds, image, target_res=100)
+    # if out_img is None:
+    #     logger.error("遮罩失敗")
+    #     raise SystemExit(1)
+
+    # logger.notice(f"out_img_display shape（表示用）：{out_img.shape}") 
+
+    # cv2.imshow('Mask Image', out_img)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
