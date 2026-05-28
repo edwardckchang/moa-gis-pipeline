@@ -418,7 +418,7 @@ def main(conn, target_res: int = 100) -> None:
 
 
 if __name__ == "__main__":
-    setup_logging(level=20)
+    setup_logging(level=15)
     load_dotenv()
     config = dotenv_values()
     DB_USER     = config.get("DB_USER")
