@@ -77,53 +77,112 @@ from logs_handle import logger, setup_logging
 from gis_downloader import replace_url_parameters, fetch_wms_image, save_image
 from dotenv import load_dotenv, dotenv_values
 import pandas as pd
-from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping, shp_reader
+from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping, shp_reader, filter_remote_taiwan_islands
 import re, time
 from gis_db import create_gis_table, load_all_polygon_coords, check_shp_needs_update, upsert_gis_boundary
-from gis_db import load_map_links, log_gis_metadata, check_gis_exists
+from gis_db import load_map_links, log_gis_metadata, check_gis_exists, get_missing_records, clear_failed_records
 from cli_utils import yes_no_menu
 from utils import init_checkpoint, checkpoint as cp
 from map_name_mapping import get_or_create_map_name_en
-from file_utils import load_json_data, save_json_data
 
-def _save_checkpoint(shp_ver: str, map_name_en: str, area_id: str) -> None:
-    data = load_json_data(CHECKPOINT_PATH)
-    if data == None:
-        data = {}
-    data[shp_ver] = {
-        "map_name_en": map_name_en,
-        "area_id":     area_id,
-        "status":      "interrupted"
-    }
-    save_json_data(data, CHECKPOINT_PATH)
+def _process_single_town(conn, polygon_record, map_link, map_name_en, shp_version, target_res):    
+    area_id = polygon_record.get("area_id")
+    area_level = polygon_record.get("area_level")
+    geometry_obj = polygon_record.get("geometry")
+    filtered_geometry = filter_remote_taiwan_islands(geometry_obj, target_res, BBOX_THRESHOLD, LON_MIN, LAT_MIN)
+    if filtered_geometry is not None:
+        logger.info(f"geometry 已過濾，area_id={area_id} / {map_name_en} / {shp_version}")        
+        geometry_obj = filtered_geometry
+    _failed = True
+    try:
+        if area_level == "town":
+            countyeng = polygon_record.get("COUNTYENG") or ""
+            towneng   = polygon_record.get("TOWNENG") or ""
+            if not countyeng or not towneng:
+                logger.error(
+                    f"COUNTYENG 或 TOWNENG 為空 "
+                    f"（COUNTYENG={countyeng!r}, TOWNENG={towneng!r}），"
+                    f"跳過 area_id={area_id}。"
+                )
+                return 
+            region_en = f"{countyeng}_{towneng}"
+        elif area_level == "county":
+            countyeng = polygon_record.get("COUNTYENG") or ""
+            if not countyeng:
+                logger.error(f"COUNTYENG 為空，跳過 area_id={area_id}。")
+                return
+            region_en = countyeng
+        else:
+            logger.error(f"未知 area_level='{area_level}'，跳過 area_id={area_id}。")
+            return
+        region_en = region_en.replace(" ", "_")
+        bounds = geometry_obj.bounds  # (minx, miny, maxx, maxy) == (lon_min, lat_min, lon_max, lat_max)
+        width, height = get_width_height_from_geographic_mapping(bounds, target_res)
+        if width * height > BBOX_THRESHOLD:
+            logger.warning(f"偵測到 BBOX 過大 ({width}×{height})，紀錄 failed：{area_id} / {map_name_en} / {shp_version}")
+            return
+        new_params = {
+            "BBOX":   f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}",
+            "WIDTH":  width,
+            "HEIGHT": height,
+        }
+        request_url = replace_url_parameters(map_link, new_params)
 
-def _load_checkpoint(shp_ver: str) -> tuple[dict, bool]:
-    data = load_json_data(CHECKPOINT_PATH)
-    if data == None:
-        return {}, True
-    entry = data.get(shp_ver, {})
-    if not entry:
-        return {}, True
-    if entry.get("status") == "completed":
-        choice = yes_no_menu(f"版本 {shp_ver} 上次已完整完成，是否從頭開始")
-        return {}, choice
-    logger.notice(
-        f"偵測到版本 {shp_ver} 中斷點："
-        f"圖層={entry['map_name_en']}, area_id={entry['area_id']}，"
-        f"將從此位置繼續。"
-    )
-    return entry, True
+        raw_image = fetch_wms_image(request_url)
+        if raw_image is None:
+            logger.error(f"WMS 下載失敗：area_id={area_id} / {map_name_en}。")
+            return
+        # 3e. 落地 raw 影像
+        SHP_ver_pattern = re.compile(r'.*?(\d{7})(?!\d)')
+        shp_ver = SHP_ver_pattern.search(shp_version).group(1)
+        ori_save_info = save_image(raw_image, map_name_en, region_en, shp_ver, "raw")
+        if ori_save_info['status'] == "error":
+            logger.error(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 落地失敗。")
+            return
+        if ori_save_info['status'] == "unchanged":
+            file_path = check_gis_exists(conn, ori_save_info, area_id, map_name_en, shp_version, "raw")
+            logger.debug(f"file_path={file_path}")
+            if file_path and os.path.exists(file_path):
+                mask_save_info = {"status": "unchanged"}
+                file_path = check_gis_exists(conn, mask_save_info, area_id, map_name_en, shp_version, stage="masked")
+                logger.debug(f"file_path={file_path}")
+                if file_path and os.path.exists(file_path):
+                    logger.notice(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 先前已落地完成。")
+                    _failed = False
+                    return
 
-def _clear_checkpoint(shp_ver: str) -> None:
-    """僅更新指定版本的 status，其他版本不受影響。"""
-    data = load_json_data(CHECKPOINT_PATH)
-    if data == None:
-        return
-    if shp_ver in data:
-        data[shp_ver]["status"] = "completed"
-    else:
-        data[shp_ver] = {"status": "completed"}
-    save_json_data(data, CHECKPOINT_PATH)
+        # 3h. 執行地理遮罩
+        masked_image, _ = png_geographic_mapping(geometry_obj, bounds, raw_image, target_res)
+        if masked_image is None:
+            logger.error(f"圖層遮罩失敗：area_id={area_id} / {map_name_en}。")
+            return    
+        mask_save_info = save_image(masked_image, map_name_en, region_en, shp_ver, "masked")
+        if mask_save_info['status'] == "error":
+            logger.error(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 落地失敗。")
+            return
+        if mask_save_info['status'] == "unchanged" and ori_save_info['status'] == "unchanged":                
+            file_path = check_gis_exists(conn, mask_save_info, area_id, map_name_en, shp_version, stage="masked")
+            if file_path is not None and os.path.exists(file_path):
+                logger.notice(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 先前已落地完成。")
+                _failed = False
+                return
+        cp([area_id, area_level, map_name_en, shp_version, ori_save_info, mask_save_info])
+        result = log_gis_metadata(conn, area_id, area_level, map_name_en, shp_version, ori_save_info)
+        _log_result_message(result, area_id, map_name_en, shp_version, ori_save_info)
+        result = log_gis_metadata(conn, area_id, area_level, map_name_en, shp_version, mask_save_info, stage="masked")
+        _log_result_message(result, area_id, map_name_en, shp_version, mask_save_info, stage="masked")
+        _failed = False
+    finally:
+        if _failed:
+            log_gis_metadata(conn, area_id, area_level, map_name_en,
+                             shp_version, {"status": "failed", "path": ""},
+                             stage="failed")
+
+def _log_result_message(result, area_id, map_name_en, shp_version, save_info, stage="raw"):
+    if result == True:
+        logger.logs(f"{area_id} : {stage} / {map_name_en} / {shp_version} 紀錄完成 ({save_info['status']})")
+    elif result == False:
+        logger.logs(f"{area_id} : {stage} / {map_name_en} / {shp_version} 紀錄失敗 ({save_info['status']})")
 
 def _run_shp_pipeline(conn, shp_dir: str) -> None:
     """
@@ -159,8 +218,6 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
 
     Args:
         conn: moa_gis 資料庫的 psycopg2 connection 物件。
-        shp_version (str): 本次使用的 SHP 版本（不含副檔名），例如 "TOWN_MOI_1140318"，
-            作為 masked 目錄名稱與 GIS_metadata 的 shp_version 欄位。
         target_res (int): WMS 請求的地面解析度（公尺/像素），預設 100。
 
     Returns:
@@ -177,11 +234,6 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
             土壤XX / 母岩性質   → soil_survey_{類型名}
           作物名稱與土壤類型需翻譯對照，待 Phase 3 建立
     """
-    def _log_result_message(result, area_id, map_name_en, shp_version, save_info, stage="raw"):
-        if result == True:
-            logger.logs(f"{area_id} : {stage} / {map_name_en} / {shp_version} 紀錄完成 ({save_info['status']})")
-        elif result == False:
-            logger.logs(f"{area_id} : {stage} / {map_name_en} / {shp_version} 紀錄失敗")
     # 1. 取得 WMS 圖層 URL
     map_links = load_map_links(conn)
     if not map_links or len(map_links) == 0:
@@ -204,7 +256,7 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
         # 邏輯：如果 area_level 是 town 且 COUNTYENG 為空，就根據 COUNTYID 去對照表抓值
         town_mask = (all_polygon_gdf['area_level'] == 'town') & (all_polygon_gdf['COUNTYENG'].isna())
         all_polygon_gdf.loc[town_mask, 'COUNTYENG'] = all_polygon_gdf.loc[town_mask, 'COUNTYID'].map(county_map)        
-        logger.info("已完成記憶體內 COUNTYENG 補值 (僅限本次執行)")
+        logger.debug("已完成記憶體內 COUNTYENG 補值 (僅限本次執行)")
 
     # 2.2 選擇 SHP 版本
     # 從 shp_version 欄位萃取民國年月日（7位數），去重後排序供選單使用
@@ -243,145 +295,72 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
         else:
             print(f"請輸入 1 到 {len(SHP_vers)} 之間的數字。")
 
-    logger.notice(f"已選擇 SHP 版本：{shp_ver}")
+    logger.info(f"已選擇 SHP 版本：{shp_ver}")
     # 過濾掉選定以外的版本
     mask_ver = all_polygon_gdf["shp_version"].str.contains(shp_ver, regex=False, na=False)
     all_polygon_records = all_polygon_gdf.loc[mask_ver].to_dict("records")
 
-    checkpoint, choice = _load_checkpoint(shp_ver)
-    if not choice:
-        return
-    resume_map  = checkpoint.get("map_name_en", "")   # 空字串 = 從頭開始
-    resume_area = checkpoint.get("area_id", "")
-    skip_map  = bool(resume_map)
-    skip_area = False
-
     if not all_polygon_records:
         logger.error(f"版本 {shp_ver} 篩選後無任何行政區資料，請確認入庫狀況。")
         return
+    # 檢查所有缺失紀錄（包含初次執行）
+    all_area_ids = [r["area_id"] for r in all_polygon_records]
+    all_classifications = [
+        get_or_create_map_name_en(k)
+        for k in map_links.keys()
+        if get_or_create_map_name_en(k)
+    ]
+    missing = get_missing_records(conn, shp_ver, all_area_ids, all_classifications)
+    cp(missing, "missing obj:")
+    if not missing:
+        logger.success(f"版本 {shp_ver} 目前無缺失紀錄")
+        retry = yes_no_menu("該版本已全部完成，是否重跑？")
+        if retry:
+            # 設定全部的資料重跑
+            missing = [
+                {"area_id": area_id, "classification": cls}
+                for area_id in all_area_ids
+                for cls in all_classifications
+            ]
+            logger.notice(f"版本 {shp_ver} 全部重跑，共 {len(missing)} 筆。")
+        else:
+            return
+    else:
+        logger.warning(f"版本 {shp_ver} 發現 {len(missing)} 筆缺失紀錄需要補跑。")
 
+    # 重組：{map_name_en: set(area_id)} 供 O(1) 查詢
+    missing_lookup: dict[str, set] = {}
+    for rec in missing:
+        missing_lookup.setdefault(rec["classification"], set()).add(rec["area_id"])
+    cp(missing_lookup, "missing_lookup:")
+    record_map = {r["area_id"]: r for r in all_polygon_records}
+    link_map   = {get_or_create_map_name_en(k): v for k, v in map_links.items()}
+    
     # 3. 雙層迴圈：圖層 × 鄉鎮
-    for map_name, map_link in map_links.items():
-        map_name_en = get_or_create_map_name_en(map_name)
-        if not map_name_en:
-            logger.error(f"圖層 '{map_name}' 無對應英文名稱，跳過。")
+    for map_name_en, missing_area_ids in missing_lookup.items():
+        map_link = link_map.get(map_name_en)
+        if not map_link:
+            logger.warning(f"找不到圖層連結：{map_name_en}，跳過。")
             continue
-        if skip_map: # 讀取中斷點，跳過上次完成的圖層
-            if map_name_en != resume_map:
-                logger.notice(f"Checkpoint 跳過圖層：{map_name_en}")
-                continue
-            # 找到 checkpoint 圖層，停止跳過
-            for n in range(3, 0, -1):
-                print(f"--- {n} 秒後繼續 ---", end="\r")
-                time.sleep(1)
-            skip_map  = False
-            skip_area = bool(resume_area)
 
-        for polygon_record in all_polygon_records:
+        for polygon_record in all_polygon_records:            
             area_id = polygon_record.get("area_id")
-            if skip_area: # 讀取中斷點，跳過上次完成的行政區
-                if area_id != resume_area:
-                    logger.notice(f"Checkpoint 跳過行政區：{area_id}")
-                    continue
-                # 找到 resume_area，這筆已完成，跳過本身從下一筆開始
-                for n in range(3, 0, -1):
-                    print(f"--- {n} 秒後繼續 ---", end="\r")
-                    time.sleep(1)
-                skip_area = False
+            if area_id not in missing_area_ids:
                 continue
             shp_version = polygon_record.get("shp_version")
-            area_level = polygon_record.get("area_level")
             geometry_obj = polygon_record.get("geometry")
-            if area_level == "town":
-                countyeng = polygon_record.get("COUNTYENG") or ""
-                towneng   = polygon_record.get("TOWNENG") or ""
-                if not countyeng or not towneng:
-                    logger.error(
-                        f"COUNTYENG 或 TOWNENG 為空 "
-                        f"（COUNTYENG={countyeng!r}, TOWNENG={towneng!r}），"
-                        f"跳過 area_id={area_id}。"
-                    )
-                    continue
-                region_en = f"{countyeng}_{towneng}"
-            elif area_level == "county":
-                countyeng = polygon_record.get("COUNTYENG") or ""
-                if not countyeng:
-                    logger.error(f"COUNTYENG 為空，跳過 area_id={area_id}。")
-                    continue
-                region_en = countyeng
-            else:
-                logger.error(f"未知 area_level='{area_level}'，跳過 area_id={area_id}。")
-                continue
-
             if geometry_obj is None:
                 logger.error(f"geometry 為 None，跳過 area_id={area_id}。")
                 continue
-            region_en = region_en.replace(" ", "_")
             # cp(f"{[shp_version, area_level, area_id, geometry_obj, region_en]}")
-            
-            # 3b. 計算 BBOX 與請求尺寸
-            bounds = geometry_obj.bounds  # (minx, miny, maxx, maxy) == (lon_min, lat_min, lon_max, lat_max)
-            width, height = get_width_height_from_geographic_mapping(bounds, target_res)
-            new_params = {
-                "BBOX":   f"{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}",
-                "WIDTH":  width,
-                "HEIGHT": height,
-            }
-
-            # 3c. 組裝完整 URL
-            request_url = replace_url_parameters(map_link, new_params)
-
-            # 3d. 下載 raw 影像
-            raw_image = fetch_wms_image(request_url)
-            if raw_image is None:
-                logger.warning(f"WMS 下載失敗，跳過 area_id={area_id} / {map_name_en}。")
-                continue
-            # 3e. 落地 raw 影像
-            ori_save_info = save_image(raw_image, map_name_en, region_en, shp_version, "raw")
-            # 3f. raw 落地失敗 → 跳過此行政區
-            if ori_save_info['status'] == "error":
-                logger.logs(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 落地失敗，跳過。")
-                continue
-            # cp(ori_save_info)
-            if ori_save_info['status'] != "unchanged":                
-                logger.debug(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 落地完成，狀態為 {ori_save_info['status']}")
-            # 3g. raw 未變動 → 確認 masked 是否已存在，存在則跳過遮罩
-            if ori_save_info['status'] == "unchanged":                
-                if check_gis_exists(conn, ori_save_info, area_id, map_name_en, shp_version, "masked"):
-                    continue
-                else:
-                    ori_save_info['status'] = "created"
-            result = log_gis_metadata(conn, area_id, area_level, map_name_en, shp_version, ori_save_info)
-            _log_result_message(result, area_id, map_name_en, shp_version, ori_save_info)
-
-            # 3h. 執行地理遮罩
-            masked_image, _ = png_geographic_mapping(geometry_obj, bounds, raw_image, target_res)
-            if masked_image is None:
-                logger.logs(f"{area_id} 地區的 raw 圖層 {map_name_en} 版本 {shp_version} 遮罩失敗，跳過。")
-                continue
-
-            # 3i. 落地 masked 影像（channel transpose 由 save_image 內部統一處理）
-            mask_save_info = save_image(masked_image, map_name_en, region_en, shp_version, "masked")
-            # cp(mask_save_info)
-            if mask_save_info['status'] == "error":
-                logger.logs(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 落地失敗，跳過。")
-                continue
-            if mask_save_info['status'] != "unchanged":                
-                logger.debug(f"{area_id} 地區的 masked 圖層 {map_name_en} 版本 {shp_version} 落地完成，狀態為 {mask_save_info['status']}")
-            if mask_save_info['status'] == "unchanged":
-                if check_gis_exists(conn, mask_save_info, area_id, map_name_en, shp_version, "masked"):
-                    continue
-                mask_save_info['status'] = "created"
-            result = log_gis_metadata(conn, area_id, area_level, map_name_en, shp_version,
-                mask_save_info, stage="masked")
-            _log_result_message(result, area_id, map_name_en, shp_version, mask_save_info, stage="masked")
-            _save_checkpoint(shp_ver, map_name_en, area_id)
+            _process_single_town(conn, polygon_record, map_link, map_name_en, shp_version, target_res)
         logger.success(f"圖層 '{map_name_en}' 全部行政區處理完畢。")
-        for n in range(5, 0, -1):
+        for n in range(3, 0, -1):
             print(f"--- {n} 秒後繼續 ---", end="\r")
             time.sleep(1)
-        print(" " * 20, end="\r") 
-    _clear_checkpoint(shp_ver)
+        print(" " * 20, end="\r")
+    if not get_missing_records(conn, shp_ver, all_area_ids, all_classifications):
+        clear_failed_records(conn, shp_ver)
 
 def main(conn, target_res: int = 100) -> None:
     """
@@ -434,13 +413,12 @@ def main(conn, target_res: int = 100) -> None:
             _run_shp_pipeline(conn, SHP_DIR)
         elif choice == '2':
             _geographic_mapping(conn, target_res)
-            print("此功能尚未實作。")
         else:
             print("無效的選擇，請重新輸入。")
 
 
 if __name__ == "__main__":
-    setup_logging(level=15)
+    setup_logging(level=10)
     load_dotenv()
     config = dotenv_values()
     DB_USER     = config.get("DB_USER")
@@ -449,14 +427,15 @@ if __name__ == "__main__":
     TABLE_GIS_001 = "GIS_001" # 如果要修改表格名稱，要在 gis_db 全域新增表格名稱參數
     TABLE_GIS_METADATA = "GIS_metadata" # 如果要修改表格名稱，要在 gis_db 全域新增表格名稱參數
     SHP_DIR = "boundaries"
+    BBOX_THRESHOLD = 4000 * 4000
+    LON_MIN, LAT_MIN = 122, 21.8
     """
     raw_image_path = os.path.join("output", "wms_images", shp_version, "raw", classification)
     masked_image_path = os.path.join("output", "wms_images", shp_version, "masked", classification)
     如果要修改分布圖存檔資料結構，可以將 gis_downloader.save_image() 參數拉到 _geographic_mapping 或此處做設定。
     """    
-    CHECKPOINT_PATH = "output/geographic_mapping_checkpoint.json"
     conn = connect_conn(DB_USER, DB_PASSWORD, DB_NAME)
-    init_checkpoint(True, False)
+    init_checkpoint(False, False)
     # 以下開始為 _geographic_mapping 的語句逐步測試
     maplinks = load_map_links(conn)
 
