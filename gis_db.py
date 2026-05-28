@@ -22,20 +22,6 @@ GIS 專屬資料庫操作模組，集中管理所有 GIS 相關的 SQL 邏輯。
   更新時將舊版重命名為 geographic_color_metadata.{YYYYMMDD}.bak 保留備份。
   相關讀取邏輯集中在 add_color_mapping_level1() 與 gis_quantifier.py。
 
-TODO（Phase 2 — 層級一）：
-  - [X] 定義資料表名稱常數：直接寫於SQL語句
-        TABLE_GIS_001 = "GIS_001"
-        TABLE_GIS_METADATA = "GIS_metadata"
-  - [ ] 實作 get_gis_metadata(conn) -> list[dict]：
-        從 GIS_metadata 讀取全部執行紀錄。
-        每筆 dict 至少需包含：
-          - 後續討論KEY為和（應為country中文名稱）
-
-
-TODO（Phase 3 — 層級二）：
-  - [ ] 實作 log_gis_metadata(conn, record)
-        寫入單筆影像處理執行紀錄，資料表結構見下方 create_gis_() TODO
-
 相依模組：
   geopandas, numpy, cv2（OpenCV）
   file_utils（load_json_data, save_json_data）
@@ -54,6 +40,7 @@ from sqlalchemy import create_engine, inspect
 from dotenv import load_dotenv
 from utils import checkpoint as cp
 import logging
+from typing import Union
 
 load_dotenv()
 db_user = os.getenv("DB_USER")
@@ -87,7 +74,6 @@ def get_count(conn, table_id: str) -> str:
         res = execute_sql(conn, f'SELECT COUNT(*) FROM "{table_id}";', fetch_all=True)
         return f"{res[0]['count'] if res else 0}"
     return "0"
-
 
 def infer_schema_from_geodataframe(gdf: gpd.GeoDataFrame) -> dict:
     """
@@ -151,12 +137,10 @@ def log_gis_metadata(
 ) -> bool:
     """
     將單筆影像處理結果寫入 GIS_metadata。
-    save_info 為 save_image() 的回傳值，status 為 "created" 或 "updated" 時才寫入。
+    失敗時 stage 寫入 "failed" 。
     """
     from database_manager import execute_sql
 
-    if save_info["status"] == "error" or save_info["status"] == "unchanged":
-        return None
     file_path = save_info.get("path", "")
     # stage 預設由呼叫端的 save_info 路徑推斷，或直接由參數指定
     # 此處統一以參數 stage 為準
@@ -167,22 +151,26 @@ def log_gis_metadata(
         "shp_version":    shp_version,
         "stage":          stage,
         "file_path":      file_path,
+        "layer_updated":  False
     }
-
+    layer_updated = save_info.get("status") == "updated"
+    if layer_updated:
+        record["layer_updated"] = True
     upsert_sql = """
         INSERT INTO "GIS_metadata"
-            (area_id, area_level, classification, shp_version, stage, file_path)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (area_id, area_level, classification, shp_version, stage, file_path, layer_updated)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (area_id, classification, shp_version, stage)
         DO UPDATE SET
             file_path    = EXCLUDED.file_path,
             recorded_at  = NOW();
-    """
+    """    
+    
     result = execute_sql(
         conn, upsert_sql,
         (
             record["area_id"], record["area_level"], record["classification"],
-            record["shp_version"], record["stage"], record["file_path"]
+            record["shp_version"], record["stage"], record["file_path"], record["layer_updated"]
         )
     )
     if not result:
@@ -253,7 +241,14 @@ def create_gis_table(conn) -> bool:
 
     # ====================== 建立 GIS_metadata ======================
     if not table_exists(conn, "GIS_metadata"):
-        logger.notice("正在建立資料表 GIS_metadata...")        
+        logger.notice("正在建立資料表 GIS_metadata...")
+        sql_enum = """
+        DO $$ BEGIN
+            CREATE TYPE gis_stage AS ENUM ('raw', 'masked', 'failed');
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$;
+        """
+        execute_sql(conn, sql_enum)
         sql_metadata = """
         CREATE TABLE IF NOT EXISTS "GIS_metadata" (
             id               SERIAL        PRIMARY KEY,
@@ -261,7 +256,7 @@ def create_gis_table(conn) -> bool:
             area_level       TEXT          NOT NULL,
             classification   TEXT          NOT NULL,     -- 圖層英文名稱
             shp_version      TEXT          NOT NULL,
-            stage            TEXT          NOT NULL CHECK (stage IN ('raw', 'masked')),
+            stage            gis_stage     NOT NULL,
             file_path        TEXT          NOT NULL,
             layer_updated    BOOLEAN       DEFAULT FALSE,
             recorded_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -271,7 +266,7 @@ def create_gis_table(conn) -> bool:
         CREATE INDEX IF NOT EXISTS idx_gismeta_batch_load ON "GIS_metadata" (shp_version, classification)
         INCLUDE (stage, area_id, file_path);
         CREATE INDEX IF NOT EXISTS idx_gismeta_file_path ON "GIS_metadata" (file_path);
-        """        
+        """
         if execute_sql(conn, sql_metadata):
             logger.success("✅ GIS_metadata 資料表建立完成")
         else:
@@ -395,7 +390,7 @@ def get_gis_metadata(conn, para, shp_version: str, area_level: str = None, area_
     """
     pass
 
-def check_gis_exists(conn, save_info: dict, area_id: str, map_name_en: str, shp_version: str, stage: str = "masked") -> bool:
+def check_gis_exists(conn, save_info: dict, area_id: str, map_name_en: str, shp_version: str, stage: str = "masked") -> Union[bool, str]:
     if save_info["status"] != "unchanged":
         return False  # 只有 unchanged 才需要檢查
 
@@ -412,12 +407,10 @@ def check_gis_exists(conn, save_info: dict, area_id: str, map_name_en: str, shp_
         (area_id, map_name_en, shp_version, stage),
         fetch_one=True
     )
+    logger.debug(f"meta_result: {meta_result}")
     if meta_result and os.path.exists(meta_result[0]):
-        logger.debug(
-            f"raw 未變動且 masked 已存在，跳過 "
-            f"area_id={area_id} / {map_name_en}。"
-        )
-        return True
+        return meta_result[0]
+
     return False
 
 def check_shp_needs_update(conn, shp_version: str) -> bool:
@@ -545,29 +538,58 @@ def upsert_gis_boundary(conn, gdf: gpd.GeoDataFrame, shp_version: str) -> bool:
         logger.error(f"upsert_gis_polygon 發生未預期錯誤: {e}，已回滾")
         return False
 
+def clear_failed_records(conn, shp_ver: str) -> None:
+    """
+    清除該 shp_ver (純數字) 下 stage 標記為 failed 的紀錄，要在 get_missing_records 回傳為空時使用。
+    """
+    count_sql = """
+        SELECT COUNT(*) FROM "GIS_metadata"
+        WHERE shp_version LIKE %s
+          AND stage = 'failed';
+    """
+    count_result = execute_sql(conn, count_sql, (f"%{shp_ver}%",), fetch_one=True)
+    count = count_result[0] if count_result else 0
+
+    if count == 0:
+        logger.info(f"版本 {shp_ver} 無失敗紀錄，略過清除。")
+        return
+
+    delete_sql = """
+        DELETE FROM "GIS_metadata"
+        WHERE shp_version LIKE %s
+          AND stage = 'failed';
+    """
+    execute_sql(conn, delete_sql, (f"%{shp_ver}%",))
+    logger.info(f"已清除 {count} 筆版本 {shp_ver} 的失敗紀錄。")
+
+def get_missing_records(conn, shp_ver: str, all_area_ids: list, all_classifications: list) -> list[dict]:
+    """
+    找出該 shp_ver (純數字) 下「應該處理但 GIS_metadata 中完全沒有紀錄」的組合
+    """
+    if not all_area_ids or not all_classifications:
+        return []
+
+    sql = """
+        SELECT DISTINCT area_id, classification 
+        FROM "GIS_metadata" 
+        WHERE shp_version LIKE %s
+          AND stage = 'masked';
+    """
+    existing = execute_sql(conn, sql, (f"%{shp_ver}%",), fetch_all=True) or []
+    existing_set = {(row['area_id'], row['classification']) for row in existing}
+
+    missing = []
+    for area_id in all_area_ids:
+        for cls in all_classifications:
+            if (area_id, cls) not in existing_set:
+                missing.append({
+                    "area_id": area_id,
+                    "classification": cls
+                })
+
+    return missing
+
 if __name__ == '__main__':
-    # 手動維護工具的使用範例：為新圖層建立色彩對應表
-    # metadata_path 改為新專案根目錄下的 geographic_color_metadata.json
-    metadata_path = 'geographic_color_metadata.json'
-
-    png_path = r"C:\Python\work\farmland_spatial_map\soil_survey\母岩性質.png"
-    illustrative_diagram_name = "Parent Material Property(illustrative_diagram)"
-
-    from utils import process_string
-    illustrative_diagram_name = process_string(illustrative_diagram_name)
-    png_path = os.path.normpath(png_path)
-
-    try:
-        if os.path.exists(png_path):
-            png = load_image_with_chinese_path(png_path)
-            logger.info(f"圖片形狀: {png.shape}")
-            unique_colors = decode_png_color_value(png)
-            if unique_colors is not None:
-                add_color_mapping_level1(illustrative_diagram_name, unique_colors, metadata_path)
-        else:
-            logger.error(f"找不到檔案: {png_path}")
-    except Exception as e:
-        logger.error(e)
 
     # 參考
     # 一次撈取該版本的所有 Metadata
