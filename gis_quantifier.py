@@ -6,8 +6,7 @@ gis_quantifier.py
 職責範圍：
   - 處理含中文路徑的本地圖片讀取（繞過 cv2.imread() 的路徑限制）
   - 從地理圖片中萃取所有不重複的非白色 BGR 像素值，
-    供 gis_db.add_color_mapping_level1() 建立色彩對應表使用
-  - 將遮罩後的 PNG 落地至輸出目錄，並避免重複儲存相同內容
+    供 add_color_mapping_level1() 建立色彩對應表使用
 
 設計原則：
   - 所有影像在記憶體中以 numpy.ndarray 傳遞，落地只在 save_mask_image() 發生
@@ -18,7 +17,6 @@ TODO（Phase 3 — 層級二）：
   - [ ] 實作 quantify_mask(out_img, color_map, polygon, crs_utm)：
         接收 png_geographic_mapping() 的回傳值，依 color_map 統計各類別
         像素數與面積（需先將 polygon 投影至 EPSG:3826 計算實際面積）
-  - [ ] save_mask_image() 補完重複檢查邏輯（見函式內 TODO）
 
 相依模組：
   cv2（OpenCV）, numpy, datetime, os
@@ -31,6 +29,7 @@ import os
 import numpy as np
 from logs_handle import logger
 from typing import Union
+from file_utils import load_json_data, save_json_data
 
 # 白色背景排除閾值：BGR 各分量需同時 >= 254 才視為白色背景被排除。
 # 使用 < 254 而非 != 255，目的是將抗鋸齒、JPEG 壓縮產生的
@@ -191,3 +190,154 @@ def decode_png_color_value(png: np.ndarray) -> "list[tuple] | None":
         logger.notice(f"  BGR: {color}")
 
     return unique_colors
+
+def add_color_mapping_level1(
+    illustrative_diagram_name: str,
+    unique_colors: list,
+    metadata_path: str
+) -> None:
+    """
+    互動式 CLI 工具：為指定圖層的每種像素色彩輸入對應的業務意義，
+    並將結果寫入 geographic_color_metadata.json。此為「層級一標籤」建立流程。
+
+    使用情境：
+      首次處理新的 WMS 圖層時，由開發者手動執行一次，建立該圖層的色彩對應表。
+      建立完成後，量化流程（gis_quantifier.py）即可依此 JSON 進行像素統計。
+
+    流程：
+      1. 依 unique_colors 建立 30×30px 色塊並以 cv2.imshow() 顯示，
+         方便對照目視識別每種顏色
+      2. 載入 metadata_path 的 JSON；若該圖層名稱已存在則提示並中止，
+         防止意外覆蓋已建立的對應表
+      3. 互動式輸入資料類型（data_type）與每種色彩的對應值（color_map）
+      4. 將新條目寫回 JSON 並關閉 cv2 視窗
+
+    Args:
+        illustrative_diagram_name (str): 圖層的唯一識別名稱，作為 JSON 的頂層 key，
+            建議格式："{layer_name}[illustrative_diagram]"，
+            例如 "soil_ph[illustrative_diagram]"。
+            應先以 utils.process_string() 標準化（小寫、空格轉底線）後再傳入。
+        unique_colors (list[tuple]): 圖片中所有不重複且非白色的 BGR 色彩列表，
+            由 gis_quantifier.decode_png_color_value() 產生，
+            格式為 [(B, G, R), ...]，各分量為 int。
+        metadata_path (str): geographic_color_metadata.json 的檔案路徑。
+
+    Returns:
+        None。結果直接寫入 metadata_path 所指的 JSON 檔案。
+
+    Side Effects:
+        - 開啟 cv2 視窗（執行期間）
+        - 修改 metadata_path 指向的 JSON 檔案
+        - 透過 input() 阻塞等待使用者輸入
+
+    Notes:
+        - 此函式為一次性的手動維護工具，不應在自動化流程（排程）中呼叫
+        - color_map 的 value 目前存為使用者輸入的原始字串；
+          若需要數值型別（int/float/list），需在輸入後另行轉換
+        - JSON key 格式為 "B,G,R"（逗號分隔字串），例如 "1,254,3"
+        - 更新既有 JSON 時，舊版本會被重命名為
+          geographic_color_metadata.{YYYYMMDD}.bak 保留備份（TODO 待實作）
+
+    TODO（Phase 3）：
+        - [ ] 考慮支援多值輸入（例如 soil_texture 的 value 為 [sand%, silt%, clay%] 列表），
+              目前僅儲存單一字串，複雜結構需手動編輯 JSON
+        - [ ] 若 unique_colors 數量超過一定閾值（例如 20 種），
+              考慮分頁顯示色塊，避免橫向視窗過寬
+    """
+    if not unique_colors:
+        logger.error("add_color_mapping_level1：unique_colors 為空，無法執行。")
+        return
+
+    # 1. 建立色塊橫向拼接影像並顯示
+    block_size = 30
+    color_blocks = [
+        np.full((block_size, block_size, 3), (b, g, r), dtype=np.uint8)
+        for b, g, r in unique_colors
+    ]
+    display_image = np.hstack(color_blocks)
+
+    window_name = f'Mapping: {illustrative_diagram_name} Unique Colors (Non-White BGR order)'
+    cv2.imshow(window_name, display_image)
+
+    print("\n----------------------------------------------------")
+    print(f"請參照視窗 [{window_name}] 中的顏色塊，進行後續輸入。")
+    cv2.waitKey(100)  # 確保視窗彈出後再繼續
+
+    def get_input_while_showing(prompt: str) -> str:
+        """在等待 input() 時，保持 cv2 視窗活躍。"""
+        cv2.waitKey(1)
+        return input(prompt)
+
+    # 2. 載入並檢查既有 Metadata，防止覆蓋
+    metadata = load_json_data(metadata_path)
+    if not metadata:
+        metadata = {}
+
+    existing_entry = metadata.get(illustrative_diagram_name)
+    if existing_entry is not None:
+        logger.warning(f"{illustrative_diagram_name} 的色彩對應資料已存在，請手動修改 JSON 或重新執行。")
+        print("已存在的資料如下：")
+        print(f"  data_type: {existing_entry.get('data_type')}")
+        print(f"  color_to_value: {existing_entry.get('color_to_value')}")
+        input("按 Enter 關閉視窗...")
+        cv2.destroyAllWindows()
+        return
+
+    # 3. 互動式輸入 — 資料類型
+    print(f"\n--- 開始為圖層 [{illustrative_diagram_name}] 輸入顏色對應資訊 ---")
+    from utils import process_string
+    data_type = process_string(
+        get_input_while_showing("請輸入此地圖資料的類型 (例如: '分級', 'pH連續分段', '土質'): ")
+    )
+    print(f"您輸入的資料類型為: {data_type}")
+
+    # 4. 互動式輸入 — 逐色對應
+    color_map = {}
+    for b, g, r in unique_colors:
+        color_key = f"{b},{g},{r}"
+        value = process_string(
+            get_input_while_showing(f"請輸入 BGR {color_key} 代表的意義或等級: ")
+        )
+        color_map[color_key] = value
+        print(f"  色彩 {color_key} → {value}")
+
+    # 5. 寫回 JSON
+    metadata[illustrative_diagram_name] = {
+        "data_type": data_type,
+        "color_to_value": color_map
+    }
+
+    saved_path = save_json_data(metadata, metadata_path)
+    if saved_path:
+        logger.info(f"色彩對應表已儲存至 {saved_path}")
+    else:
+        logger.error(f"儲存色彩對應表至 {metadata_path} 時發生錯誤。")
+
+    # 6. 關閉視窗
+    print("--- 顏色映射輸入完成，正在關閉視窗 ---")
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    # 手動維護工具的使用範例：為新圖層建立色彩對應表
+    # metadata_path 改為新專案根目錄下的 geographic_color_metadata.json
+    metadata_path = 'geographic_color_metadata.json'
+
+    png_path = r"C:\Python\work\farmland_spatial_map\soil_survey\母岩性質.png"
+    illustrative_diagram_name = "Parent Material Property(illustrative_diagram)"
+
+    from utils import process_string
+    illustrative_diagram_name = process_string(illustrative_diagram_name)
+    png_path = os.path.normpath(png_path)
+
+    try:
+        if os.path.exists(png_path):
+            png = load_image_with_chinese_path(png_path)
+            logger.info(f"圖片形狀: {png.shape}")
+            unique_colors = decode_png_color_value(png)
+            if unique_colors is not None:
+                add_color_mapping_level1(illustrative_diagram_name, unique_colors, metadata_path)
+        else:
+            logger.error(f"找不到檔案: {png_path}")
+    except Exception as e:
+        logger.error(e)
+        

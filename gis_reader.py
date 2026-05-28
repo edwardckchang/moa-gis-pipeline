@@ -95,7 +95,6 @@ def _natural_sort_key(s):
             result.append(part)
     return tuple(result)
 
-
 def get_width_height_from_geographic_mapping(
     bounds: tuple,
     target_resolution_m: int = 100

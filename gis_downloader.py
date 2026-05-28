@@ -26,12 +26,6 @@ gis_downloader.py
   8. 呼叫 save_image(..., stage="masked") 落地，取得 save_info dict
   9. 呼叫端依兩個 save_info 寫入 GIS_metadata
 
-TODO（Phase 3 — 層級二）：
-  - [ ] 在 fetch_wms_image() 加入重試機制（建議 3 次，間隔指數退避），
-        處理 WMS 服務偶發的 timeout 或 5xx 錯誤
-  - [ ] 在 fetch_wms_image() 加入 Content-Type 驗證，
-        確認 response 為 image/png 而非 XML 錯誤訊息（WMS 服務錯誤時仍回傳 200）
-
 相依模組：
   requests, cv2（OpenCV）, numpy, datetime, os
   logs_handle（統一 logger）
@@ -181,7 +175,7 @@ def save_image(
     image_data: "np.ndarray | bytes",
     classification: str,
     region_name_en: str,
-    shp_version: str,
+    shp_ver: str,
     stage: str
 ) -> dict:
     """
@@ -189,12 +183,12 @@ def save_image(
     供 main_gis.py 寫入 GIS_metadata。
 
     目錄結構與版本策略：
-        output/wms_images/{classification}/raw/
-            {region_name_en}.png          ← 永遠只保留最新版，內容有變時覆蓋
-        output/wms_images/{classification}/masked/{shp_version}/
-            {region_name_en}.png          ← 以 SHP 檔名為版本目錄，自然隔離不同界線版本
+        output/wms_images/shp_ver/raw/{classification}/
+            {region_name_en}.png
+        output/wms_images/shp_ver/masked/{classification}/
+            {region_name_en}.png
 
-        raw  策略：覆蓋更新。落地前以 np.array_equal() 比對既有檔案：
+        raw  策略：版本隔離。落地前以 np.array_equal() 比對既有檔案：
                      - 初次落地：status="created"
                      - 內容不同：status="updated"（覆蓋）
                      - 內容相同：status="unchanged"（跳過寫入）
@@ -238,7 +232,7 @@ def save_image(
           本函式只接受已轉換的英文字串
     """
     # 1. 組合落地路徑
-    dir_path = os.path.join("output", "wms_images", shp_version, stage, classification)
+    dir_path = os.path.join("output", "wms_images", shp_ver, stage, classification)
     os.makedirs(dir_path, exist_ok=True)
     file_path = os.path.join(dir_path, f"{region_name_en}.png")
     # 2. 根據輸入類型處理
