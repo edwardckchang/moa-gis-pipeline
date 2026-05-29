@@ -176,7 +176,8 @@ def save_image(
     classification: str,
     region_name_en: str,
     shp_ver: str,
-    stage: str
+    stage: str,
+    target_res: int = 100
 ) -> dict:
     """
     將 raw 或 masked 影像依版本策略落地至輸出目錄，並回傳儲存結果 dict
@@ -184,9 +185,9 @@ def save_image(
 
     目錄結構與版本策略：
         output/wms_images/shp_ver/raw/{classification}/
-            {region_name_en}.png
+            {region_name_en}{target_res}m2.png
         output/wms_images/shp_ver/masked/{classification}/
-            {region_name_en}.png
+            {region_name_en}_{target_res}m2.png
 
         raw  策略：版本隔離。落地前以 np.array_equal() 比對既有檔案：
                      - 初次落地：status="created"
@@ -234,7 +235,7 @@ def save_image(
     # 1. 組合落地路徑
     dir_path = os.path.join("output", "wms_images", shp_ver, stage, classification)
     os.makedirs(dir_path, exist_ok=True)
-    file_path = os.path.join(dir_path, f"{region_name_en}.png")
+    file_path = os.path.join(dir_path, f"{region_name_en}_{str(target_res)}m2.png")
     # 2. 根據輸入類型處理
     if isinstance(image_data, bytes):
         final_bytes = image_data

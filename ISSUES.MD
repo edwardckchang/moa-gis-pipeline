@@ -358,6 +358,7 @@
     - 修改存檔路徑，從shp_version改為shp_ver
         - output/wms_images/shp_ver/raw/{classification}/
         - output/wms_images/shp_ver/masked/{classification}/
+    - 修改存檔路徑，加上 `_{str(target_res)}m2` 作為檔名後綴。
 
 ---
 
