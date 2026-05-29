@@ -79,7 +79,7 @@ from dotenv import load_dotenv, dotenv_values
 import pandas as pd
 from gis_reader import get_width_height_from_geographic_mapping, png_geographic_mapping, shp_reader, filter_remote_taiwan_islands
 import re, time
-from gis_db import create_gis_table, load_all_polygon_coords, check_shp_needs_update, upsert_gis_boundary
+from gis_db import create_gis_table, load_all_polygon_coords, check_shp_needs_update, upsert_gis_boundary, match_records_and_files
 from gis_db import load_map_links, log_gis_metadata, check_gis_exists, get_missing_records, clear_failed_records
 from cli_utils import yes_no_menu
 from utils import init_checkpoint, checkpoint as cp
@@ -361,6 +361,7 @@ def _geographic_mapping(conn, target_res: int = 100) -> None:
         print(" " * 20, end="\r")
     if not get_missing_records(conn, shp_ver, all_area_ids, all_classifications):
         clear_failed_records(conn, shp_ver)
+    match_records_and_files(conn, shp_ver, all_area_ids, all_classifications)
 
 def main(conn, target_res: int = 100) -> None:
     """
@@ -403,7 +404,8 @@ def main(conn, target_res: int = 100) -> None:
     while True:
         print("\n請選擇操作：")
         print("1. 更新 SHP 界線")
-        print("2. 更新 WMS 量化")
+        print("2. 更新 WMS 下載與遮罩")
+        print("3. 更新 PNG 量化")
         print("q. 退出")
         choice = input("請輸入您的選擇：").strip().lower()
         if choice == 'q':
@@ -413,6 +415,8 @@ def main(conn, target_res: int = 100) -> None:
             _run_shp_pipeline(conn, SHP_DIR)
         elif choice == '2':
             _geographic_mapping(conn, target_res)
+        # elif choice == '3':
+            
         else:
             print("無效的選擇，請重新輸入。")
 

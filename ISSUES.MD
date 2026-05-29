@@ -328,6 +328,7 @@
 - [X] 新增 `get_missing_records`，獲得所有未入庫的行政區界之圖層
 - [X] 新增 `clear_failed_records`，全部完成後清除失敗記錄
 - [X] 修改表格建置，用 `ENUM ('raw', 'masked', 'failed')` 來寫入 `stage` 欄位參數
+- [X] 新增 `match_records_and_files`，用來檢查紀錄與檔案的完整性。
 
 ---
 

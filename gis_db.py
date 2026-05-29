@@ -589,6 +589,207 @@ def get_missing_records(conn, shp_ver: str, all_area_ids: list, all_classificati
 
     return missing
 
+def match_records_and_files(
+    conn,
+    shp_ver: str,
+    all_area_ids: list,
+    all_classifications: list,
+) -> bool:
+    """
+    比對 GIS_metadata 與磁碟 PNG，清除不完整的 DB 紀錄與殘留 PNG。
+
+    「完整」定義：(area_id, classification) 在 GIS_metadata 中同時擁有
+    raw 與 masked 兩筆紀錄，且兩個 file_path 對應的 PNG 均存在於磁碟。
+    不符條件者一律：
+      (1) 刪除相關 PNG（raw / masked，若存在）
+      (2) DELETE FROM GIS_metadata（raw + masked 一併刪除）
+    磁碟上存在但 DB 中完全沒有對應紀錄的 PNG（孤立檔案）亦一律刪除。
+
+    Args:
+        conn:               psycopg2 connection。
+        shp_ver:            7 位民國年月日版本號字串，例如 "1140318"。
+        all_area_ids:       預期應存在的 area_id 清單（用於缺漏 log）。
+        all_classifications: 預期應存在的 classification 清單（用於缺漏 log）。
+
+    Returns:
+        True：執行完成（含 0 筆清理的情況）；False：前置條件不足或發生例外。
+    """
+    if not all_area_ids or not all_classifications:
+        logger.error("match_records_and_files：all_area_ids 或 all_classifications 為空，中止。")
+        return False
+
+    base_dir   = os.path.join("output", "wms_images", shp_ver)
+    raw_dir    = os.path.join(base_dir, "raw")
+    masked_dir = os.path.join(base_dir, "masked")
+    os.makedirs(raw_dir,    exist_ok=True)
+    os.makedirs(masked_dir, exist_ok=True)
+
+    # ──────────────────────────────────────────
+    # Phase 1：從 DB 取出所有 raw / masked 紀錄
+    # ──────────────────────────────────────────
+    sql = """
+        SELECT area_id, classification, stage, file_path
+        FROM "GIS_metadata"
+        WHERE shp_version LIKE %s
+          AND stage IN ('raw', 'masked');
+    """
+    db_records = execute_sql(conn, sql, (f"%{shp_ver}%",), fetch_all=True) or []
+
+    # key = (area_id, classification) → file_path（已 normpath）
+    raw_db:    dict[tuple, str] = {}
+    masked_db: dict[tuple, str] = {}
+    for row in db_records:
+        key  = (row["area_id"], row["classification"])
+        path = os.path.normpath(row["file_path"]) if row["file_path"] else ""
+        if row["stage"] == "raw":
+            raw_db[key] = path
+        else:
+            masked_db[key] = path
+    cp(raw_db, "raw_db")
+    cp(masked_db, "masked_db")
+    # ──────────────────────────────────────────
+    # Phase 2：掃描磁碟，建立「所有已知 PNG」的 normpath set（供孤立檔偵測）
+    # ──────────────────────────────────────────
+    def _scan_png(stage_root: str) -> set:
+        """遞迴掃描 stage_root 下的所有 .png，回傳 normpath set。"""
+        result: set[str] = set()
+        if not os.path.isdir(stage_root):
+            return result
+        for cls_name in os.listdir(stage_root):
+            cls_path = os.path.join(stage_root, cls_name)
+            if not os.path.isdir(cls_path):
+                continue
+            for fname in os.listdir(cls_path):
+                if fname.lower().endswith(".png"):
+                    result.add(os.path.normpath(os.path.join(cls_path, fname)))
+        return result
+
+    raw_disk_files    = _scan_png(raw_dir)
+    masked_disk_files = _scan_png(masked_dir)
+    cp(raw_disk_files, "raw_disk_files")
+    cp(masked_disk_files, "masked_disk_files")
+
+    # ──────────────────────────────────────────
+    # Phase 3：判斷完整性
+    #   完整 = raw DB 紀錄存在 + raw PNG 存在 + masked DB 紀錄存在 + masked PNG 存在
+    # ──────────────────────────────────────────
+    all_db_keys = set(raw_db) | set(masked_db)
+    complete_keys:   set[tuple] = set()
+    incomplete_keys: set[tuple] = set()
+
+    for key in all_db_keys:
+        raw_path    = raw_db.get(key, "")
+        masked_path = masked_db.get(key, "")
+
+        raw_ok    = bool(raw_path)    and os.path.exists(raw_path)
+        masked_ok = bool(masked_path) and os.path.exists(masked_path)
+
+        if raw_ok and masked_ok:
+            complete_keys.add(key)
+        else:
+            incomplete_keys.add(key)
+            reason_parts = []
+            if not raw_ok:
+                reason_parts.append(
+                    "raw DB 缺紀錄" if not raw_path else f"raw PNG 不存在({raw_path})"
+                )
+            if not masked_ok:
+                reason_parts.append(
+                    "masked DB 缺紀錄" if not masked_path else f"masked PNG 不存在({masked_path})"
+                )
+            logger.debug(
+                f"不完整組合 area_id={key[0]}, cls={key[1]}：{', '.join(reason_parts)}"
+            )
+
+    # 有效 PNG 路徑集合（完整組合才保留）
+    valid_paths: set[str] = set()
+    for key in complete_keys:
+        valid_paths.add(raw_db[key])
+        valid_paths.add(masked_db[key])
+
+    logger.info(
+        f"完整：{len(complete_keys)} 筆，"
+        f"不完整：{len(incomplete_keys)} 筆，"
+        f"磁碟 raw PNG：{len(raw_disk_files)} 個，"
+        f"磁碟 masked PNG：{len(masked_disk_files)} 個"
+    )
+    # ──────────────────────────────────────────
+    # Phase 4a：刪除不完整組合的 PNG（DB 有紀錄的路徑）
+    # ──────────────────────────────────────────
+    deleted_files = 0
+
+    for key in incomplete_keys:
+        for path in [raw_db.get(key, ""), masked_db.get(key, "")]:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                    deleted_files += 1
+                    logger.debug(f"已刪除不完整 PNG：{path}")
+                except OSError as e:
+                    logger.warning(f"刪除 PNG 失敗：{path}，原因：{e}")
+
+    # Phase 4b：刪除磁碟上的孤立 PNG（不屬於任何完整組合）
+    for disk_files in (raw_disk_files, masked_disk_files):
+        for fpath in disk_files:
+            if fpath not in valid_paths:
+                try:
+                    os.remove(fpath)
+                    deleted_files += 1
+                    logger.debug(f"已刪除孤立 PNG：{fpath}")
+                except OSError as e:
+                    logger.warning(f"刪除孤立 PNG 失敗：{fpath}，原因：{e}")
+
+    # ──────────────────────────────────────────
+    # Phase 4c：批次刪除不完整組合的 DB 紀錄（raw + masked 一併刪除）
+    # ──────────────────────────────────────────
+    delete_sql = """
+        DELETE FROM "GIS_metadata"
+        WHERE shp_version LIKE %s
+          AND area_id = %s
+          AND classification = %s;
+    """
+    deleted_records = 0
+    failed_deletes  = 0
+
+    for area_id, cls in incomplete_keys:
+        result = execute_sql(conn, delete_sql, (f"%{shp_ver}%", area_id, cls))
+        if result:
+            deleted_records += 1
+        else:
+            failed_deletes += 1
+            logger.warning(f"DB 刪除失敗：area_id={area_id}, classification={cls}")
+
+    # ──────────────────────────────────────────
+    # 補充 log：預期清單中完全缺席的組合（連 DB 紀錄都沒有）
+    # ──────────────────────────────────────────
+    expected_keys = {
+        (aid, cls)
+        for aid in all_area_ids
+        for cls in all_classifications
+    }
+    fully_absent = expected_keys - all_db_keys
+    if fully_absent:
+        logger.notice(
+            f"預期清單中有 {len(fully_absent)} 個組合在 DB 中完全不存在，"
+            f"請透過 get_missing_records() 補跑。"
+        )
+
+    if failed_deletes:
+        logger.warning(
+            f"match_records_and_files 完成（有失敗）："
+            f"保留 {len(complete_keys)} 筆，"
+            f"刪除 DB {deleted_records} 筆，刪除 PNG {deleted_files} 個，"
+            f"DB 刪除失敗 {failed_deletes} 筆。"
+        )
+        return False
+
+    logger.success(
+        f"match_records_and_files 完成："
+        f"保留 {len(complete_keys)} 筆，"
+        f"刪除 DB {deleted_records} 筆，刪除 PNG {deleted_files} 個。"
+    )
+    return True
+
 if __name__ == '__main__':
 
     # 參考
